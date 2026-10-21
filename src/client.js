@@ -114,7 +114,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     onDanger: "var(--dsw-alias-button-danger-foreground, #ffffff)",
     tooltipBg: "var(--dsw-alias-bg-inverse, var(--dsw-alias-label-primary))",
     tooltipText: "var(--dsw-alias-label-inverse, var(--dsw-alias-bg-base))",
-    toastIcon: "var(--dsw-alias-state-success-primary)",
+    toastIcon: "var(--bkl-toast-icon, var(--dsw-alias-state-success-primary))",
     overlay: "color-mix(in srgb, #000 48%, transparent)",
     scrollShade: "color-mix(in srgb, #000 16%, transparent)",
 
@@ -146,6 +146,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     brandMark: {
       display: "grid", placeItems: "center", width: "38px", height: "38px",
       borderRadius: tk.rMd, background: tk.accentSoft, color: tk.accent, flexShrink: 0,
+      border: `1px solid ${tk.accentLine}`,
     },
     titleRow: { display: "flex", alignItems: "center", gap: "8px" },
     lead: { margin: 0, fontSize: tk.fontLabel, color: tk.label3 },
@@ -166,7 +167,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     pageTip: {
       display: "flex", alignItems: "flex-start", gap: "11px",
       padding: "11px 12px 11px 14px", marginBottom: "4px",
-      border: `1px dashed ${tk.line2}`, borderRadius: tk.rMd,
+      border: `1px dashed ${tk.accentLine}`, borderRadius: tk.rMd,
       background: tk.layer1, fontSize: tk.fontLabel, color: tk.label2,
     },
     pageTipIcon: { color: tk.accent, marginTop: "2px", flexShrink: 0 },
@@ -395,8 +396,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     wordAside: { flex: "1 1 260px", minWidth: 0 },
     wordToolbar: { display: "flex", alignItems: "center", gap: "8px" },
     wordSearchWrap: { position: "relative", flex: "1 1 auto", minWidth: 0 },
-    wordSearch: { paddingLeft: "28px", paddingRight: "30px" },
-    wordSearchIcon: { position: "absolute", left: "8px", top: "8px", color: tk.label3, font: tk.fontSmall, pointerEvents: "none" },
+    wordSearch: { paddingRight: "30px" },
     wordSearchClear: { position: "absolute", right: "2px", top: "2px" },
     wordList: { margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", border: `0.5px solid ${tk.line2}`, borderRadius: tk.rSm, overflow: "hidden" },
     wordHead: { display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px", fontSize: tk.fontHelp, color: tk.label3 },
@@ -455,9 +455,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       border: `1px solid ${tk.line2}`,
     },
     stateEmpty: { border: `1px dashed ${tk.line3}`, background: "transparent" },
-    stateWarn: { border: `1px solid ${tk.warn}`, background: tk.warnSoft },
-    stateError: { border: `1px solid ${tk.error}`, background: tk.errorSoft },
-    stateLoading: { border: `1px solid ${tk.accent}`, background: tk.accentSoft },
+    stateWarn: { border: `1px solid ${tk.warn}`, background: `linear-gradient(180deg, ${tk.warnSoft}, ${tk.layer1} 72%)` },
+    stateError: { border: `1px solid ${tk.error}`, background: `linear-gradient(180deg, ${tk.errorSoft}, ${tk.layer1} 72%)` },
+    stateLoading: { border: `1px solid ${tk.accent}`, background: `linear-gradient(180deg, ${tk.accentSoft}, ${tk.layer1} 72%)` },
     stateCompact: { padding: "20px 16px", border: "none", background: "transparent" },
     stateIcon: {
       width: "48px", height: "48px", borderRadius: tk.rMd, display: "grid", placeItems: "center",
@@ -498,6 +498,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       borderBottom: `1px dashed ${tk.line4}`, cursor: "help", position: "relative",
       display: "inline", textDecoration: "none", outlineOffset: "2px",
     },
+    termTip: {
+      position: "fixed", zIndex: 70, boxSizing: "border-box", maxWidth: "min(280px, 72vw)",
+      padding: "8px 12px", borderRadius: tk.rMd,
+      background: tk.tooltipBg, color: tk.tooltipText,
+      fontFamily: tk.mono, fontSize: tk.fontHelp, lineHeight: 1.55, fontWeight: 400,
+      whiteSpace: "normal", textAlign: "left", wordBreak: "break-word",
+      boxShadow: "0 16px 48px color-mix(in srgb, #000 35%, transparent)",
+      pointerEvents: "none",
+    },
     spinner: {
       display: "inline-block", width: "18px", height: "18px", border: `2px solid ${tk.accent}`,
       borderRightColor: "transparent", borderRadius: "50%", animation: "bkl-spin 0.8s linear infinite",
@@ -527,7 +536,29 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 只放伪类与动效：内联样式做不到 :hover / :focus-visible / 减弱动态。背景类
   // 规则带 !important，是因为内联样式的优先级高于样式表。焦点环沿用宿主
   // ui-theme/focus.css 的写法，指针操作时宿主会把 --dsw-focus-ring-color 置成透明。
+  // 深色主题按原型 frontend.v2.html 的暗色调色板覆盖语义色：宿主深色令牌是中性灰配
+  // 高饱和绿，原型是蓝灰底配薄荷绿/浅蓝。只覆盖状态色（渐变与强调色的来源）和
+  // 浮窗 toast 图标，不动表面层级与文字色；设置页与浮窗共用这一份。
+  const DARK_PALETTE = [
+    'html[data-ds-theme-source="dark"] .bkl-root, html[data-ds-theme-source="dark"] .bkl-dock {',
+    '  --dsw-alias-state-business-primary: #9ab1ff;',
+    '  --dsw-alias-state-business-secondary: #3a4c82;',
+    '  --dsw-alias-state-business-tertiary: #212c4d;',
+    '  --dsw-alias-state-success-primary: #8dd9b2;',
+    '  --dsw-alias-state-success-secondary: #2d5a44;',
+    '  --dsw-alias-state-success-tertiary: #1a3127;',
+    '  --dsw-alias-state-warn-primary: #f0c27a;',
+    '  --dsw-alias-state-warn-secondary: #66512a;',
+    '  --dsw-alias-state-warn-tertiary: #33291a;',
+    '  --dsw-alias-state-error-primary: #ffa8ab;',
+    '  --dsw-alias-state-error-secondary: #73404a;',
+    '  --dsw-alias-state-error-tertiary: #3a2228;',
+    '  --bkl-toast-icon: #1f6e4c;',
+    '}',
+  ].join("\n")
+
   const SCOPED_CSS = [
+    DARK_PALETTE,
     ".bkl-root :focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }",
     // 弹窗的遮罩只能走样式表：内联样式写不出 ::backdrop。
     ".bkl-root .bkl-dialog::backdrop { background: color-mix(in srgb, #000 48%, transparent); }",
@@ -547,9 +578,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-input::placeholder { color: var(--dsw-alias-label-caption); }",
     // 术语 Tooltip
     ".bkl-root .bkl-term { border-bottom: 1px dashed var(--dsw-alias-label-tertiary); cursor: help; position: relative; display: inline; text-decoration: none; }",
-    ".bkl-root .bkl-term:hover::after, .bkl-root .bkl-term:focus-visible::after { content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 6px); width: max-content; max-width: min(280px, 72vw); padding: 8px 12px; border-radius: var(--dsw-radius-md, 8px); background: var(--dsw-alias-bg-inverse, var(--dsw-alias-label-primary)); color: var(--dsw-alias-label-inverse, var(--dsw-alias-bg-base)); font: var(--dsw-font-xxs-12, 12px/1.55 var(--dsw-font-mono, sans-serif)); font-weight: 400; letter-spacing: 0; white-space: normal; text-align: left; text-transform: none; word-break: break-word; z-index: 60; box-shadow: 0 16px 48px color-mix(in srgb, #000 35%, transparent); pointer-events: none; animation: bkl-fade 120ms ease-out; }",
     "html[data-guide=\"off\"] .bkl-root .bkl-term { border-bottom: none; cursor: inherit; }",
-    "html[data-guide=\"off\"] .bkl-root .bkl-term::after { display: none !important; }",
     // 居中状态块
     ".bkl-root .bkl-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 40px 24px; border-radius: var(--dsw-radius-lg, 12px); border: 1px dashed var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-state.error { border-style: solid; border-color: var(--dsw-alias-state-error-secondary, color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent)); background: linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent), var(--dsw-alias-bg-layer-1) 75%); }",
@@ -581,7 +610,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-flow strong { display: block; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary); line-height: 22px; }",
     ".bkl-root .bkl-flow span.bkl-sub { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }",
     ".bkl-root .bkl-flow li.done { --tone: var(--dsw-alias-state-success-primary); }",
-    ".bkl-root .bkl-flow li.done .bkl-flow-num { background: var(--dsw-alias-state-success-primary); border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-label-primary-foreground, #ffffff); }",
+    ".bkl-root .bkl-flow li.done .bkl-flow-num { background: var(--dsw-alias-state-success-primary); border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-flow li.current { --tone: var(--dsw-alias-state-business-primary); }",
     ".bkl-root .bkl-flow li.current .bkl-flow-num { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent)); box-shadow: 0 0 0 3px var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent)); }",
     ".bkl-root .bkl-flow li.current strong { color: var(--dsw-alias-label-primary); }",
@@ -597,7 +626,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     "@media (max-width: 840px) { .bkl-root .bkl-columns { grid-template-columns: minmax(0, 1fr); } }",
 
     // 三步引导（Guide）：展开态进度 + 步骤行；关闭态是 link 按钮，无需样式。
-    ".bkl-root .bkl-guide { padding: 4px 20px; }",
+    ".bkl-root .bkl-guide { padding: 4px 20px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-guide-title { padding: 14px 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }",
     ".bkl-root .bkl-guide-title h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
     ".bkl-root .bkl-guide-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }",
@@ -607,7 +636,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-guide-item.is-current { margin: 0 -20px; padding-inline: 20px; background: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); border-top-color: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); }",
     ".bkl-root .bkl-step-num { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--dsw-alias-border-l4); border-radius: 50%; font-size: 11px; font-weight: 700; flex: none; margin-top: 1px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-step-num svg { width: 13px; height: 13px; }",
-    ".bkl-root .bkl-step-num.done { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-label-primary-foreground, #ffffff); }",
+    ".bkl-root .bkl-step-num.done { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-step-num.current { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }",
     ".bkl-root .bkl-guide-item strong { display: block; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
     ".bkl-root .bkl-guide-item p { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin: 2px 0 0; }",
@@ -701,6 +730,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 单独注入一张表，只在浮窗挂载时生效。内联样式优先于样式表，所以带 !important。
   const DOCK_STYLE_ID = "bkl-dock-style"
   const DOCK_CSS = [
+    DARK_PALETTE,
     ".bkl-dock .dock-close:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)) !important; color: var(--dsw-alias-label-primary) !important; }",
     ".bkl-dock .dock-mode-card:hover:not([aria-pressed=\"true\"]):not([aria-disabled=\"true\"]) { border-color: var(--dsw-alias-border-l4) !important; }",
     ".bkl-dock .dock-alias-del:hover:not([disabled]) { color: var(--dsw-alias-state-error-primary) !important; }",
@@ -3288,7 +3318,28 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const pair = fn ? fn() : null
     const displayWord = children ?? label ?? (pair ? pair.word : word)
     const displayTip = pair ? pair.tip : tip
+    const [tipPos, setTipPos] = useState(null)
     if (!displayTip) return h("span", null, displayWord)
+
+    // 释义必须落在设置面板/浮窗之内：绝对定位的 ::after 在右边缘会跑到界面外，
+    // 改成按锚点位置算 fixed 坐标，并夹到所在面板的矩形里；下方放不下就翻到上方。
+    const showTip = (event) => {
+      if (typeof window === "undefined") return
+      const el = event.currentTarget
+      if (typeof el?.getBoundingClientRect !== "function") return
+      const rect = el.getBoundingClientRect()
+      const panel = typeof el.closest === "function" ? el.closest(".bkl-root, .bkl-dock") : null
+      const box = panel !== null
+        ? panel.getBoundingClientRect()
+        : { left: 8, right: window.innerWidth - 8, top: 8, bottom: window.innerHeight - 8 }
+      const width = Math.min(280, window.innerWidth * 0.72)
+      const left = Math.max(box.left + 8, Math.min(rect.left, box.right - 8 - width))
+      let above = rect.bottom + 110 > box.bottom - 8
+      if (above && rect.top - 6 - 110 < box.top + 8) above = false
+      setTipPos({ left, top: above ? rect.top - 6 : rect.bottom + 6, above })
+    }
+    const hideTip = () => { setTipPos(null) }
+
     return h("span", {
       className: "bkl-term",
       tabIndex: 0,
@@ -3296,7 +3347,21 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       "data-tip": displayTip,
       "aria-label": `${String(displayWord)} (${String(displayTip)})`,
       style: S.term,
-    }, displayWord)
+      onMouseEnter: showTip,
+      onFocus: showTip,
+      onMouseLeave: hideTip,
+      onBlur: hideTip,
+    }, displayWord,
+      tipPos === null
+        ? null
+        : h("span", {
+          role: "tooltip",
+          style: merge(S.termTip, {
+            left: `${tipPos.left}px`,
+            top: `${tipPos.top}px`,
+            transform: tipPos.above ? "translateY(-100%)" : undefined,
+          }),
+        }, displayTip))
   }
 
   const PAGE_EFFECTS = {
@@ -4781,8 +4846,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             : null,
           h("div", { style: S.wordToolbar },
             h("div", { style: S.wordSearchWrap },
-              h("span", { style: S.wordSearchIcon, "aria-hidden": "true" }, "\u2315"),
-              h("label", { htmlFor: "bkl-word-search", className: "sr-only" }, T.wordsSearchLabel),
+              h("label", { htmlFor: "bkl-word-search", style: S.srOnly }, T.wordsSearchLabel),
               h("input", {
                 id: "bkl-word-search",
                 className: "bkl-input",
@@ -4853,7 +4917,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             h("textarea", {
               id: "bkl-word-preview",
               className: "bkl-input",
-              style: merge(S.input, { minHeight: "84px" }),
+              style: merge(S.input, { minHeight: "84px", maxWidth: "100%", resize: "vertical" }),
               value: previewText,
               placeholder: T.wordsPreviewPlaceholder,
               spellCheck: false,
