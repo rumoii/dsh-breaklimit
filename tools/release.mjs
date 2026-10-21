@@ -30,8 +30,8 @@ function sourceInfo(read) {
     throw new Error(`CHANGELOG.md: missing ## ${pkg.version}`)
   }
   const hashes = readJson(read, 'src/patch/hashes.json')
-  if (!hashes.dsh || hashes.dsh.version !== pkg.dshTarget || !SHA.test(hashes.dsh.commit)) {
-    throw new Error('package.json dshTarget does not match src/patch/hashes.json')
+  if (!hashes.dsh || hashes.dsh.version !== pkg.engines?.dsh || !SHA.test(hashes.dsh.commit)) {
+    throw new Error('package.json engines.dsh does not match src/patch/hashes.json')
   }
   for (const name of REQUIRED) {
     if (!read(name).trim()) throw new Error(`${name}: required release file is empty`)

@@ -82,6 +82,21 @@
 - **请求体上限随载荷走**：HTTP 请求体上限由规则正文与注入正文上限推导（6 倍 JSON 转义余量），不设不随载荷变化的固定封顶；两个正文上限本身不因此放宽。
 - **配置可追踪**：状态报告宿主根来源、模式、执行层预算现值与偏差，不依据配置宣称已生效。
 
+## 与 DSH 插件规范的偏差
+
+宿主没有一份叫「插件开发规范」的单文档，可判定的硬要求集中在 `docs/user/develop/basic/`（`Config` 是 Standard Schema、组合包声明 `engines.dsh`、客户端半侧为 lazy-CJS）与 `docs/capability-seams.zh.md`（可用的服务清单）。
+
+已对齐：`engines.dsh: 0.2.1-rc.2` 由宿主在安装与启动时判定；`src/plugin-config.js` 导出 Standard Schema 形式的 `Config`，装载前校验并补默认值；浏览器半侧经 `dsh.client` 声明、按 lazy-CJS 注册；`ctx.systemPrompt`、`ctx.sandboxPolicy`、`ctx.webServer`、`ctx.tools`、`ctx.commands` 都在公开服务清单内。
+
+仍偏离三处，都是有意的：
+
+| 偏离 | 位置 | 理由 |
+| --- | --- | --- |
+| 改宿主源码树 | `src/patch/`、`src/host/seams.js` | 规范只提供 Cordis 接缝与 bundle patch 改配置两条通道，改 `packages/**` 不在插件模型内。这是本插件的功能本体，靠预哈希、命中数守卫与事务回滚约束，README 已写明绑定宿主提交、需要重启。 |
+| 读写 Loader 条目 config | `src/host/capabilities.js` 的 `updateEntry` | `ctx.loader` 是 vendor 服务，不在插件文档的服务清单里；执行层预算没有公开写入通道。条件不成立时退回 `src/bundle.yml` 的装载期基线，失败记入状态不重试。 |
+| 浏览器侧取设置面板的 store 座位 | `src/client.js` 的 `openHostSettingsSection` | 宿主未开放「打开设置分区」接口（`SettingsOnboardingOwnerProps.openSection` 只面向 onboarding）。当前从 slots 注册表读 `sidebar.settings` 的座位调用 `openSection`，失败退回一句文字指引；宿主提供公开接口后替换此函数即可。 |
+| `--dump-config-schema` 不认手写 schema | `src/plugin-config.js` | 宿主的 schema 投影只接受带 `Symbol.for('schemastery')` 标记的原生 schema，本行会记为 `unsupported` 并使该命令退出 1。`--dump-config` 与真实装载不受影响。换成 Schemastery 要新增依赖与安装步骤，与零依赖安装冲突，因此接受这个诊断代价。 |
+
 ## 数据与兼容
 
 恢复记录、快照、规则、模式、补丁选择位于 `$DSH_HOME/breaklimit/`。自定义提示词默认为 `$DSH_HOME/breaklimit-inject.md`，可由 `injectFile` 配置覆盖。规则写入文件为 `$DSH_HOME/AGENTS.md` 或 `CLAUDE.md`。

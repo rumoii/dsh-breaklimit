@@ -1,6 +1,6 @@
 // 升级重建的前置对账。
 //
-// 宿主升级后要同时对齐四处：DSH_TARGET 的版本与提交、package.json 的 dshTarget、
+// 宿主升级后要同时对齐四处：DSH_TARGET 的版本与提交、package.json 的 engines.dsh、
 // 补丁锚点与命中数、以及 src/patch/hashes.json 的目标集合。这四处任何一处没跟上，
 // 预检都会失配，但失配的表现全都长得一样——「整文件预哈希不符」。
 // 分不清是「宿主变了」还是「哈希表没跟上」，就得在几十条 finding 里逐条猜。
@@ -85,9 +85,9 @@ try {
   pkg = null
 }
 if (pkg === null) {
-  problems.push('package.json 读不出来，无法核对 dshTarget。')
-} else if (pkg.dshTarget !== DSH_TARGET.version) {
-  problems.push(`package.json 的 dshTarget（${String(pkg.dshTarget ?? '缺失')}）与 DSH_TARGET（${DSH_TARGET.version}）不一致。`)
+  problems.push('package.json 读不出来，无法核对 engines.dsh。')
+} else if (pkg.engines?.dsh !== DSH_TARGET.version) {
+  problems.push(`package.json 的 engines.dsh（${String(pkg.engines?.dsh ?? '缺失')}）与 DSH_TARGET（${DSH_TARGET.version}）不一致。`)
 }
 
 // 4) 目标集合必须双向覆盖：声明里有而哈希表没有，预检会以"没有预哈希记录"阻断；

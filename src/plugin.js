@@ -13,6 +13,8 @@ export { hardenInstructionText } from './host/seams.js'
 export { appliedSummary, describePermissionLayers, formatStatusText } from './host/status.js'
 export const name = 'rumo-dsh-breaklimit'
 export const inject = ['systemPrompt']
+// 行配置的 Standard Schema。宿主据此校验并补默认值，校验失败整条插件行不启动。
+export { Config } from './plugin-config.js'
 
 export function apply(ctx, config = {}) {
   const runtime = {
