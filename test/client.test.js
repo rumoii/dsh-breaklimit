@@ -1478,6 +1478,31 @@ test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
   assert.equal(textEn.includes('Runtime behavior: Not verified by this page'), true)
 })
 
+test('开关与勾选框照宿主 ui-primitives 的尺寸和取色', () => {
+  const { exported } = loadClient()
+  const { Switch, S } = exported
+
+  // 轨道 36×20、未选中用 border-l3、选中用品牌色——与宿主 Switch.module.css 一致。
+  const offSwitch = Switch({ on: false, onToggle() {} })
+  assert.equal(offSwitch.props.style.width, '36px', '轨道宽应为 36px')
+  assert.equal(offSwitch.props.style.height, '20px', '轨道高应为 20px')
+  assert.equal(offSwitch.props.style.background.includes('border-l3'), true, '未选中轨道应取 border-l3')
+  const offKnob = findAll(offSwitch, n => n.props?.className === 'bkl-knob')[0]
+  assert.equal(offKnob.props.style.width, '16px', '滑块应为 16px')
+  assert.equal(offKnob.props.style.background.includes('switch-thumb'), true, '未选中滑块应取 switch-thumb 令牌')
+
+  // 选中态：品牌色轨道，滑块右移 16px。
+  const onSwitch = Switch({ on: true, onToggle() {} })
+  assert.equal(onSwitch.props.style.background.includes('brand-primary'), true, '选中轨道应取品牌色')
+  const onKnob = findAll(onSwitch, n => n.props?.className === 'bkl-knob')[0]
+  assert.equal(onKnob.props.style.transform, 'translateX(16px)', '滑块右移距离应为 16px')
+
+  // 勾选框：16×16 且用品牌色强调，不用浏览器默认蓝。
+  assert.equal(S.ackInput.width, '16px', '勾选框应为 16px')
+  assert.equal(S.ackInput.height, '16px', '勾选框应为 16px')
+  assert.equal(S.ackInput.accentColor.includes('brand-primary'), true, '勾选框选中色应取品牌色')
+})
+
 test('深色配色以 body 上的实际调色板属性为条件，跟随系统时也生效', () => {
   const { exported } = loadClient()
   const css = exported.SCOPED_CSS
@@ -1676,6 +1701,9 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   // 9. 验证技术诊断折叠块（details.bkl-disclosure、一键复制按钮与提示）
   const disclosure = findAll(columnsNode, n => n.type === 'details' && n.props?.className === 'bkl-disclosure')[0]
   assert.equal(Boolean(disclosure), true, '应渲染技术诊断折叠块')
+  // 默认展开；必须接管 onToggle，否则重渲染会把 open 设回去，用户收起后又弹开。
+  assert.equal(disclosure.props.open, true, '技术诊断应默认展开')
+  assert.equal(typeof disclosure.props.onToggle, 'function', '应接管 onToggle 以保持受控')
   assert.equal(textOf(disclosure).includes('含本机路径，不含凭据'), true, '应展示不含凭据提示')
   const copyBtn = findAll(disclosure, n => n.type === 'button').find(b => textOf(b).includes('复制诊断信息'))
   assert.equal(Boolean(copyBtn), true, '应渲染复制诊断信息按钮')

@@ -83,6 +83,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     errorSoft: "color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent)",
     fill: "var(--dsw-alias-button-primary-fill, var(--dsw-alias-state-business-primary))",
     onFill: "var(--dsw-alias-label-primary-foreground)",
+    // 开关控件照宿主 ui-primitives 的 Switch / Checkbox 取色，选中底色与勾选强调色都用品牌色，
+    // 未选中滑块用宿主专门的 thumb 令牌（深色下是灰点，不是纯白）。
+    brand: "var(--dsw-alias-brand-primary)",
+    switchThumb: "var(--dsw-alias-switch-thumb, var(--dsw-alias-label-primary-foreground))",
     rXs: "var(--dsw-radius-xs)",
     rSm: "var(--dsw-radius-sm)",
     rMd: "var(--dsw-radius-md)",
@@ -245,17 +249,18 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     tagTone: { border: "0.5px solid currentColor" },
     dot: { display: "inline-block", width: "6px", height: "6px", borderRadius: tk.rXs, flexShrink: 0 },
 
+    // 开关照宿主 ui-primitives/Switch：36×20 轨道、16px 滑块、位移 16px。
     switchTrack: {
-      appearance: "none", position: "relative", display: "inline-block", width: "32px", height: "18px",
-      padding: 0, margin: 0, border: "none", borderRadius: tk.rXl, background: tk.line4, cursor: "pointer", flexShrink: 0,
+      appearance: "none", position: "relative", display: "inline-block", width: "36px", height: "20px",
+      padding: 0, margin: 0, border: "none", borderRadius: "999px", background: tk.line3, cursor: "pointer", flexShrink: 0,
     },
-    switchOn: { background: tk.fill },
+    switchOn: { background: tk.brand },
     switchKnob: {
-      position: "absolute", top: "2px", left: "2px", width: "14px", height: "14px",
-      borderRadius: tk.rXl, background: "#fff", transform: "translateX(0)",
+      position: "absolute", top: "2px", left: "2px", width: "16px", height: "16px",
+      borderRadius: "50%", background: tk.switchThumb, transform: "translateX(0)", transition: "transform 120ms ease",
     },
-    // 打开态的轨道是主按钮填充色（深色主题下接近白色），滑块跟主按钮文字取同一个前景色。
-    switchKnobOn: { transform: "translateX(14px)", background: tk.onFill },
+    // 打开态的滑块跟主按钮文字取同一个前景色，与宿主 Switch 的 checked 态一致。
+    switchKnobOn: { transform: "translateX(16px)", background: tk.onFill },
 
     banner: { display: "flex", flexDirection: "column", gap: "8px", padding: "12px 14px", borderRadius: tk.rMd, border: `0.5px solid ${tk.line2}` },
     bannerHead: { display: "flex", alignItems: "center", gap: "8px" },
@@ -434,7 +439,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     },
     ackDanger: { border: `1px solid ${tk.error}`, background: tk.errorSoft },
     ackChecked: { border: `1px solid ${tk.ok}`, background: tk.okSoft },
-    ackInput: { margin: "3px 0 0", width: "15px", height: "15px", flexShrink: 0 },
+    // 勾选框照宿主 ui-primitives/Checkbox：16×16，选中色用品牌色而不是浏览器默认蓝。
+    // 上边距 3px 是本行结构决定的：ackLabel 是 flex-start（文案可换行），靠它和首行文字对齐。
+    ackInput: { margin: "3px 0 0", width: "16px", height: "16px", flexShrink: 0, accentColor: tk.brand },
     ackText: { color: tk.label, lineHeight: 1.4 },
     confirmWordBox: { display: "flex", flexDirection: "column", gap: "6px", margin: "4px 0 0" },
     confirmWordLabel: { fontSize: tk.fontHelp, color: tk.label2 },
@@ -3961,6 +3968,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   }
 
   function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, guideOpen, onToggleGuide, onCopy, loadedAt, onOpenHelp }) {
+    // 技术诊断默认展开。必须是受控状态：只写 open 而不接管 onToggle 时，
+    // 每次重渲染（loadedAt 定时器）都会把 open 设回去，用户收起后又被展开。
+    const [diagOpen, setDiagOpen] = useState(true)
     const target = status?.target ?? {}
     const rootHint = status?.hostRoot ? `${T.rootSource(status.hostRootSource)}${T.sep}${String(status.hostRoot)}` : T.rootMissingShort
     let preValue = T.unknown
@@ -4134,7 +4144,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               h(Icon, { name: "arrow", size: 15 }))),
 
           // c. 技术诊断折叠块（带一键脱敏复制与提示）
-          h("details", { className: "bkl-disclosure" },
+          h("details", {
+            className: "bkl-disclosure",
+            open: diagOpen,
+            onToggle: (event) => { setDiagOpen(event.target.open) },
+          },
             h("summary", null, T.overviewDiagTitle),
             h("pre", { style: merge(S.codeBlock, { whiteSpace: "pre-wrap", marginTop: "10px", fontSize: "11px", lineHeight: 1.6 }) }, diagText),
             h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginTop: "10px", flexWrap: "wrap" } },
@@ -6805,6 +6819,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   exports.Announcer = Announcer
   exports.Tag = Tag
   exports.Button = Button
+  exports.Switch = Switch
+  // 样式对象整体导出，供测试按数值断言开关与勾选框的尺寸、取色。
+  exports.S = S
   exports.Icon = Icon
   exports.Term = Term
   exports.StateBlock = StateBlock
