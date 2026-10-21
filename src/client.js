@@ -539,8 +539,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 深色主题按原型 frontend.v2.html 的暗色调色板覆盖语义色：宿主深色令牌是中性灰配
   // 高饱和绿，原型是蓝灰底配薄荷绿/浅蓝。只覆盖状态色（渐变与强调色的来源）和
   // 浮窗 toast 图标，不动表面层级与文字色；设置页与浮窗共用这一份。
+  // 判定挂在 body[data-ds-dark-theme] 上：宿主把「偏好来源」和「实际调色板」拆成两个
+  // 属性，html[data-ds-theme-source] 取 light/dark/system，选「跟随系统」时值是 system；
+  // body 上那个属性才代表当前真的是深色，宿主在 colorScheme 为 dark 时加、否则移除。
   const DARK_PALETTE = [
-    'html[data-ds-theme-source="dark"] .bkl-root, html[data-ds-theme-source="dark"] .bkl-dock {',
+    'body[data-ds-dark-theme] .bkl-root, body[data-ds-dark-theme] .bkl-dock {',
     '  --dsw-alias-state-business-primary: #9ab1ff;',
     '  --dsw-alias-state-business-secondary: #3a4c82;',
     '  --dsw-alias-state-business-tertiary: #212c4d;',
@@ -3917,7 +3920,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const steps = [
       { title: T.guideStep1Title, body: T.guideStep1Body, tab: "prompt", done: true, defaultHint: true },
       { title: T.guideStep2Title, body: T.guideStep2Body, tab: "patches", done: f.enabledCount > 0, defaultHint: false },
-      { title: T.guideStep3Title, body: T.guideStep3Body, tab: "patches", done: f.applied !== null && !f.restartPending, defaultHint: false },
+      { title: T.guideStep3Title, body: T.guideStep3Body, tab: "patches", done: f.applied !== null && f.pendingFiles === 0 && !f.restartPending, defaultHint: false },
     ]
     const doneCount = steps.filter(step => step.done).length
     const currentIndex = steps.findIndex(step => !step.done)
@@ -6815,6 +6818,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 浮窗整棵组件：只有真正渲染一次，才能发现「定义顺序/初始化顺序」这类单测到不了的问题。
   exports.AliasRow = AliasRow
   exports.flowSteps = flowSteps
+  // 作用域样式表本身：深色配色挂在哪个属性上，只有断言拼出来的 CSS 才能防回归。
+  exports.SCOPED_CSS = SCOPED_CSS
   exports.deriveActionCard = deriveActionCard
   exports.formatDiagnostics = formatDiagnostics
   exports.OverviewPage = OverviewPage

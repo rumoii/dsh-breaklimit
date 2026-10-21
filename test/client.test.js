@@ -1478,6 +1478,18 @@ test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
   assert.equal(textEn.includes('Runtime behavior: Not verified by this page'), true)
 })
 
+test('深色配色以 body 上的实际调色板属性为条件，跟随系统时也生效', () => {
+  const { exported } = loadClient()
+  const css = exported.SCOPED_CSS
+  assert.equal(typeof css, 'string', 'SCOPED_CSS 应是拼好的样式字符串')
+  assert.equal(css.includes('body[data-ds-dark-theme] .bkl-root'), true, '深色覆盖应挂在 body 的实际调色板属性上')
+  assert.equal(css.includes('body[data-ds-dark-theme] .bkl-dock'), true, '浮窗同样覆盖')
+  // 宿主的偏好来源属性取 light/dark/system，选「跟随系统」时是 system，按它判定永远取不到 dark。
+  assert.equal(css.includes('data-ds-theme-source'), false, '不应再用偏好来源属性判定深色')
+  assert.equal(css.includes('--dsw-alias-state-success-primary: #8dd9b2;'), true, '深色成功色应是原型暗色调色板的薄荷绿')
+  assert.equal(css.includes('--bkl-toast-icon: #1f6e4c;'), true, '浮窗 toast 图标同样按原型取值')
+})
+
 test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、columns 双栏配置清单与技术诊断脱敏折叠', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { OverviewPage } = exported
@@ -1520,8 +1532,8 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
     entries: [{ from: '原词', to: '替换词' }],
   }
 
-  const renderPage = (guideOpen, words = fakeWords) => OverviewPage({
-    f: fakeF,
+  const renderPage = (guideOpen, words = fakeWords, f = fakeF) => OverviewPage({
+    f,
     status: fakeStatus,
     override: null,
     busy: false,
@@ -1605,6 +1617,21 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   })
   collapseLink.props.onClick({ preventDefault() {} })
   assert.equal(guideToggled, true, '收起链接应触发 onToggleGuide')
+
+  // 4b. 第 3 步的完成条件要连 pendingFiles 一起看：应用过、但改过补丁选择又产生待写入
+  // 文件时，这一步不能显示已完成，否则会和同一屏 flowSteps 判出的 current 打架。
+  const staleTree = mount(renderPage(true, fakeWords, { ...fakeF, applied: { files: 3 }, pendingFiles: 2 }))
+  const staleGuide = findAll(staleTree, n => n.props?.className === 'bkl-guide')[0]
+  const staleCurrent = findAll(staleGuide, n => n.props?.className === 'bkl-guide-item is-current')
+  assert.equal(staleCurrent.length, 1, '应仍有且仅有一个当前步')
+  assert.equal(textOf(staleCurrent[0]).includes('应用，并重启宿主'), true, '应用过但仍有待写入文件时，当前步应停在「应用，并重启宿主」')
+  assert.equal(findAll(staleGuide, n => n.props?.className === 'bkl-step-num done').length, 2, '这一步不该算完成')
+
+  // 4c. 对照组：待写入归零且无待重启，三步全完成，不再留当前步。
+  const allDoneTree = mount(renderPage(true, fakeWords, { ...fakeF, applied: { files: 3 }, pendingFiles: 0 }))
+  const allDoneGuide = findAll(allDoneTree, n => n.props?.className === 'bkl-guide')[0]
+  assert.equal(textOf(allDoneGuide).includes('已完成 3 / 3'), true, '三步都完成时进度应为 3 / 3')
+  assert.equal(findAll(allDoneGuide, n => n.props?.className === 'bkl-guide-item is-current').length, 0, '全部完成时不应再有当前步')
 
   // 5. 关闭态：只留 guideShow link
   const closedTree = mount(renderPage(false))
