@@ -2549,6 +2549,27 @@ test('P2 壳层：顶栏品牌与版本徽章、帮助钮与可选关闭钮', ()
   assert.equal(closed, 1, '点击关闭钮应调用 closeSettings')
 })
 
+test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', () => {
+  // updateInfo 是 Section 状态列表的最后一项（`bump` 之后，索引 27）。
+  const harness = loadSectionHarness(async () => {}, {
+    hooks: { 27: { hasUpdate: true, latestVersion: '0.9.9', autoCheckUpdates: true, checkedAt: 1 } },
+  })
+  const tree = harness.render()
+  const hint = findAll(tree, n => n.type === 'span' && textOf(n) === '有新版本 0.9.9')[0]
+  assert.equal(Boolean(hint), true, '有新版时应渲染可见文字，不能只靠变色或 title')
+
+  const badge = findAll(tree, n => n.type === harness.exported.Tag && textOf(n) === '0.9.3')[0]
+  assert.equal(badge.props?.tone, 'accent', '同时徽章仍是强调色')
+
+  // 没有新版时不留空白占位。
+  const plain = loadSectionHarness(async () => {})
+  assert.equal(
+    findAll(plain.render(), n => n.type === 'span' && textOf(n) === '有新版本 0.9.9').length,
+    0,
+    '无新版时不渲染这句文字',
+  )
+})
+
 test('P2 壳层：帮助 Dialog 标题与三步骤文案来自 TEXT', () => {
   const harness = loadSectionHarness(async () => {})
   const { exported } = harness

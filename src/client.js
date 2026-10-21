@@ -152,7 +152,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       borderRadius: tk.rMd, background: tk.accentSoft, color: tk.accent, flexShrink: 0,
       border: `1px solid ${tk.accentLine}`,
     },
-    titleRow: { display: "flex", alignItems: "center", gap: "8px" },
+    titleRow: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" },
+    // 有新版时跟在版本徽章后的那句可见文字。只靠变色或 title 提示，用户不悬停就看不到。
+    updateHint: { font: tk.fontSmall, color: tk.accent, whiteSpace: "nowrap" },
     lead: { margin: 0, fontSize: tk.fontLabel, color: tk.label3 },
     headAside: { display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
     stamp: { font: tk.fontSmall, color: tk.caption, whiteSpace: "nowrap" },
@@ -6233,11 +6235,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             h("button", {
               type: "button",
               className: "bkl-version",
-              style: { border: 0, background: "none", padding: 0, cursor: "pointer", display: "inline-flex" },
+              style: { border: 0, background: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "6px" },
               "aria-label": updateInfo?.hasUpdate === true ? T.updateBadgeHasUpdate(updateInfo.latestVersion) : T.updateBadgeIdle,
               title: updateInfo?.hasUpdate === true ? T.updateBadgeHasUpdate(updateInfo.latestVersion) : T.updateBadgeIdle,
               onClick: openUpdate,
-            }, h(Tag, updateInfo?.hasUpdate === true ? { tone: "accent" } : {}, PLUGIN_VERSION))),
+            },
+              h(Tag, updateInfo?.hasUpdate === true ? { tone: "accent" } : {}, PLUGIN_VERSION),
+              // 变色之外再给一句话：不悬停、不读屏的用户也要能看见。
+              updateInfo?.hasUpdate === true
+                ? h("span", { style: S.updateHint }, T.updateAvailable(updateInfo.latestVersion))
+                : null)),
           h("p", { style: S.lead }, T.lead)),
         h("div", { style: S.headAside },
           loadedAt > 0 ? h("span", { style: S.stamp, "aria-live": "off" }, T.refreshedAt(formatAgo(loadedAt))) : null,
