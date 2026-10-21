@@ -6,11 +6,11 @@ import { lockFilePath } from '../patch/lock.js'
 import { inspectPatches } from '../patch/service.js'
 import { readInject } from '../context/inject-file.js'
 import { resolveHostRootInfo } from './host-root.js'
-import { currentMode, sessionOf } from './seams.js'
+import { currentMode, describeSandboxPolicy, sessionOf } from './seams.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { promptMode, readMode, readModeExtension, readTail } from '../context/prompt.js'
-import { describeLoader, lastBudget, readRuntimeLimits } from './capabilities.js'
+import { describeLoader, lastBudget, readRuntimeLimits, recheckBudget } from './capabilities.js'
 
 const name = 'rumo-dsh-breaklimit'
 
@@ -154,7 +154,7 @@ export function buildStatus(ctx, config, runtime) {
     plugin: name,
     promptMode: mode,
     budget: readRuntimeLimits(ctx),
-    budgetApply: lastBudget,
+    budgetApply: recheckBudget(ctx, lastBudget),
     loader: describeLoader(ctx),
     enabled: runtime.enabled,
     injection: describeInjection(runtime.lastAssembly),
@@ -162,6 +162,7 @@ export function buildStatus(ctx, config, runtime) {
     hostRoot,
     hostRootSource: hostRootInfo.source,
     mode: currentMode(ctx, sessionOf(runtime.holder)),
+    sandbox: describeSandboxPolicy(ctx, sessionOf(runtime.holder)),
     seams: {
       approval: runtime.counters.approval,
       escalation: runtime.counters.escalation,
@@ -313,6 +314,13 @@ function permissionLine(permission) {
   return `  权限分层      ${layerCountText(permission.layers)}，${verdict}${failed}`
 }
 
+/** 错误文本压成一行，超长截断。状态输出不展开堆栈。 */
+function shortError(error) {
+  const text = String(error ?? '').replace(/\s+/gu, ' ').trim()
+  if (text === '') return '未知原因'
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text
+}
+
 /** 状态文本。只输出标量，不序列化任何宿主活对象。 */
 export function formatStatusText(status) {
   const seams = status.seams
@@ -340,6 +348,10 @@ export function formatStatusText(status) {
     `  声明改写      命中 ${String(seams.hardenHits)} 次，未识别 ${String(seams.hardenMisses)} 次`,
     `  操作锁        ${status.lock.busy ? `占用中（${String(status.lock.operationId)}）` : '空闲'}`,
   ]
+  if (status.sandbox !== undefined && status.sandbox !== null && status.sandbox.available === false) {
+    // 分流逻辑在同样情况下按 read-only 处理，这里把那一次的降级原因说出来。
+    lines.push(`  档位来源      不可判定（${shortError(status.sandbox.error)}），审批与工具门按 read-only 处理`)
+  }
   if (status.injection?.inert === true) {
     lines.push(`  注入告警      ${status.injection.reason}`)
   }

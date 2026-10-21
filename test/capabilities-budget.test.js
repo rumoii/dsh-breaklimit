@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { MODE_BUDGETS, applyModeBudget } from '../src/host/capabilities.js'
+import { MODE_BUDGETS, applyModeBudget, recheckBudget } from '../src/host/capabilities.js'
 
 function slot(value) {
   return { get() { return value } }
@@ -125,4 +125,43 @@ test('提交成功但读回值与目标不一致：记进 mismatched，不静默
   const result = await applyModeBudget(ctx, 'recommended')
   assert.equal(result.applied.includes('subagent'), true)
   assert.match(result.mismatched.find((text) => text.startsWith('subagent')), /maxDepth/u)
+})
+
+test('装载期读回不可用：记 unverified，不冒充不一致', async () => {
+  const { ctx } = fakeHost([
+    { id: 'include:host:subagent', disabled: false, options: { config: { maxActiveSubagents: 3 } } },
+  ])
+
+  const result = await applyModeBudget(ctx, 'recommended')
+  assert.equal(result.applied.includes('subagent'), true)
+  assert.deepEqual(result.mismatched, [], '装载期服务未就绪不等于写错')
+  assert.match(result.unverified.find((text) => text.startsWith('subagent')), /读回不可用/u)
+})
+
+test('复核：服务就绪且读数一致后，unverified 不再挂着', async () => {
+  const { ctx } = fakeHost([
+    { id: 'include:host:subagent', disabled: false, options: { config: {} } },
+  ])
+  const applied = await applyModeBudget(ctx, 'recommended')
+  assert.equal(applied.unverified.length, 1)
+
+  const ready = { get: name => limitsFor(MODE_BUDGETS.recommended)[name] }
+  const checked = recheckBudget(ready, applied)
+  assert.deepEqual(checked.unverified, [])
+  assert.deepEqual(checked.mismatched, [])
+})
+
+test('复核：读到值与目标不符时转进 mismatched', async () => {
+  const { ctx } = fakeHost([
+    { id: 'include:host:subagent', disabled: false, options: { config: {} } },
+  ])
+  const applied = await applyModeBudget(ctx, 'recommended')
+  const wrong = { get: name => limitsFor({ ...MODE_BUDGETS.recommended, maxDepth: 3 })[name] }
+  const checked = recheckBudget(wrong, applied)
+  assert.deepEqual(checked.unverified, [])
+  assert.match(checked.mismatched[0], /maxDepth/u)
+})
+
+test('复核：没有提交记录时原样返回', () => {
+  assert.equal(recheckBudget({ get: () => undefined }, null), null)
 })

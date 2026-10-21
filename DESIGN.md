@@ -96,6 +96,7 @@
 | 读写 Loader 条目 config | `src/host/capabilities.js` 的 `updateEntry` | `ctx.loader` 是 vendor 服务，不在插件文档的服务清单里；执行层预算没有公开写入通道。条件不成立时退回 `src/bundle.yml` 的装载期基线，失败记入状态不重试。 |
 | 浏览器侧取设置面板的 store 座位 | `src/client.js` 的 `openHostSettingsSection` | 宿主未开放「打开设置分区」接口（`SettingsOnboardingOwnerProps.openSection` 只面向 onboarding）。当前从 slots 注册表读 `sidebar.settings` 的座位调用 `openSection`，失败退回一句文字指引；宿主提供公开接口后替换此函数即可。 |
 | `--dump-config-schema` 不认手写 schema | `src/plugin-config.js` | 宿主的 schema 投影只接受带 `Symbol.for('schemastery')` 标记的原生 schema，本行会记为 `unsupported` 并使该命令退出 1。`--dump-config` 与真实装载不受影响。换成 Schemastery 要新增依赖与安装步骤，与零依赖安装冲突，因此接受这个诊断代价。 |
+| 提示词段序号只能自定 | `src/host/seams.js` 的 `registerSeams` | 宿主把段序号的统一分配留给仓库内贡献方（`getSectionOrder`），外部插件没有对应通道。本插件用 `config.order` 自定（缺省 8999、装机 10300）；另一个第三方插件也把自己的段抬到宿主段之后时，先后只由数值决定，可能与它撞序。 |
 
 ## 数据与兼容
 

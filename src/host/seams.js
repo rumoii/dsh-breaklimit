@@ -140,6 +140,31 @@ export function currentMode(ctx, session) {
   }
 }
 
+/**
+ * 档位解析的可用性。与 `currentMode` 读同一个服务，但把「读不到」暴露出来：
+ * 审批分流与工具门在服务缺失或解析抛错时按 read-only 处理，状态里要能看见这条降级，
+ * 而不是把「真的只读」和「读不到档位」显示成同一个值。
+ *
+ * @param {object} ctx - Cordis 上下文。
+ * @param {object} [session] - 当前会话；缺省时读部署默认档。
+ * @returns {{ available: boolean, mode: string|null, error: string|null }}
+ */
+export function describeSandboxPolicy(ctx, session) {
+  const policy = ctx.get('sandboxPolicy')
+  if (policy === undefined || typeof policy.resolve !== 'function') {
+    return { available: false, mode: null, error: '宿主未提供 sandboxPolicy' }
+  }
+  try {
+    const resolved = policy.resolve(session === undefined ? {} : { session })
+    const mode = typeof resolved?.mode === 'string' ? resolved.mode : null
+    return mode === null
+      ? { available: false, mode: null, error: 'sandboxPolicy 没有返回档位' }
+      : { available: true, mode, error: null }
+  } catch (error) {
+    return { available: false, mode: null, error: String(error?.message ?? error) }
+  }
+}
+
 export function sessionOf(holder) {
   return holder?.agent?.session
 }

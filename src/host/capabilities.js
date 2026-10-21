@@ -15,7 +15,8 @@
 // 启用才提交。
 //
 // 写入失败一律记进 skipped 并保留旧值：宁可没生效，也不能把宿主搞挂。提交成功后再用
-// readRuntimeLimits 读回实际生效值，与目标不一致就记进 mismatched，不静默。
+// readRuntimeLimits 读回实际生效值：与目标不一致记进 mismatched；读回不可用（装载期
+// volatile 还没就绪）记进 unverified，等状态接口稍后再核，不冒充不一致。
 //
 // src/bundle.yml 里的同名配置行是装载期基线（取推荐档的值），这样即便运行时写入
 // 全部失败，装完之后也是推荐档，而不是宿主默认。
@@ -38,6 +39,18 @@ export const MODE_BUDGETS = Object.freeze({
 
 /** 兼容旧名：装载期基线就是推荐档。 */
 export const RUNTIME_TARGET = MODE_BUDGETS.recommended
+
+/**
+ * 当前生效的两档预算。配置里的 `budgets` 由插件 Config 校验并补全为两档完整值；
+ * 直接调用（测试、命令行）没有配置时用内置值。
+ *
+ * @param {object} [config] - 插件配置。
+ * @returns {typeof MODE_BUDGETS} 两档完整预算。
+ */
+export function resolveBudgets(config) {
+  const configured = config?.budgets
+  return configured === undefined || configured === null ? MODE_BUDGETS : configured
+}
 
 /** 读出宿主当前的执行层预算，供状态与诊断展示。取不到就是 null。 */
 export function readRuntimeLimits(ctx) {
@@ -106,12 +119,22 @@ function existingConfig(entry) {
   return isPlainObject(config) ? config : {}
 }
 
-/** 提交后读回服务侧实际生效值，与目标比对。读回 null 也算「不一致」。 */
-function verifyApplied(ctx, id, service, expected, mismatched) {
+/**
+ * 提交后读回服务侧实际生效值，与目标比对。
+ *
+ * 读回 null 记进 unverified 而不是 mismatched：装载期提交时 shell/subagents 的
+ * volatile 值可能还没就绪，读不到不等于写失败。状态接口稍后读的是同一批值，
+ * 那时还读不到才说明真没生效。
+ */
+function verifyApplied(ctx, id, service, expected, mismatched, unverified) {
   const limits = readRuntimeLimits(ctx)
   const actual = limits?.[service]
   for (const [key, want] of Object.entries(expected)) {
     const got = actual?.[key] ?? null
+    if (got === null) {
+      unverified.push(`${id}：${key} 目标 ${String(want)}，读回不可用`)
+      continue
+    }
     if (got !== want) mismatched.push(`${id}：${key} 目标 ${String(want)}，实际 ${String(got)}`)
   }
 }
@@ -123,10 +146,10 @@ function verifyApplied(ctx, id, service, expected, mismatched) {
  * @param {string} id - 条目短名（`bash-sandbox` / `pwsh-sandbox` / `subagent`）。
  * @param {string} service - 读回实际值用的服务名（`shell` / `subagents`）。
  * @param {object} budgetKeys - 本次要覆盖的键。
- * @returns {Promise<{ applied: boolean, skipped: string | null, mismatched: string[] }>}
+ * @returns {Promise<{ applied: boolean, skipped: string | null, mismatched: string[], unverified: string[] }>}
  */
 async function updateEntry(ctx, id, service, budgetKeys) {
-  const skip = (reason) => ({ applied: false, skipped: `${id}：${reason}`, mismatched: [] })
+  const skip = (reason) => ({ applied: false, skipped: `${id}：${reason}`, mismatched: [], unverified: [] })
 
   // 插件自己的 ctx.loader 指向它自己的子树，兄弟条目在那里解析不到；根 loader 才有整棵树。
   const loader = ctx?.root?.loader ?? ctx?.loader ?? ctx?.get?.('loader')
@@ -152,8 +175,9 @@ async function updateEntry(ctx, id, service, budgetKeys) {
     return skip(`更新失败（${String(error?.message ?? error)}）`)
   }
   const mismatched = []
-  verifyApplied(ctx, id, service, budgetKeys, mismatched)
-  return { applied: true, skipped: null, mismatched }
+  const unverified = []
+  verifyApplied(ctx, id, service, budgetKeys, mismatched, unverified)
+  return { applied: true, skipped: null, mismatched, unverified }
 }
 
 /**
@@ -165,16 +189,20 @@ async function updateEntry(ctx, id, service, budgetKeys) {
  *
  * @param {object} ctx - Cordis 上下文，需要它的 loader。
  * @param {string} mode - 补丁模式。
- * @returns {Promise<{ mode: string, applied: string[], skipped: string[], mismatched: string[] }>}
+ * @returns {Promise<{ mode: string, applied: string[], skipped: string[], mismatched: string[], unverified: string[] }>}
  */
 /** 最近一次提交的结果，供状态与诊断展示。 */
 export let lastBudget = null
+
+/** 最近一次提交的目标值，供状态读取时复核；不进状态契约。 */
+let lastTargets = []
 
 export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
   const target = budgets[mode] ?? budgets.recommended
   const applied = []
   const skipped = []
   const mismatched = []
+  const unverified = []
   const shellConfig = {
     timeoutMs: target.timeoutMs,
     maxTimeoutMs: target.maxTimeoutMs,
@@ -190,9 +218,33 @@ export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
     if (outcome.applied) applied.push(id)
     if (outcome.skipped !== null) skipped.push(outcome.skipped)
     mismatched.push(...outcome.mismatched)
+    unverified.push(...outcome.unverified)
   }
-  lastBudget = { mode, applied, skipped, mismatched }
+  lastBudget = { mode, applied, skipped, mismatched, unverified }
+  lastTargets = plans.map(([id, service, keys]) => [id, service, keys])
   return lastBudget
+}
+
+/**
+ * 用当前读数复核最近一次提交。
+ *
+ * `applyModeBudget` 在装载期跑，那时 volatile 值可能还没就绪，读回不可用的项会留在
+ * `unverified` 里。状态读取时再核一遍：读得到的从 `unverified` 移除，读到但不相等的
+ * 转进 `mismatched`，未提交的条目不核。目标值不进状态契约。
+ *
+ * @param {object} ctx - Cordis 上下文。
+ * @param {object|null} last - 最近一次提交结果。
+ * @returns {object|null} 复核后的结果；没提交过时原样返回。
+ */
+export function recheckBudget(ctx, last) {
+  if (last === null || last === undefined) return last
+  const mismatched = []
+  const unverified = []
+  for (const [id, service, expected] of lastTargets) {
+    if (!last.applied.includes(id)) continue
+    verifyApplied(ctx, id, service, expected, mismatched, unverified)
+  }
+  return { ...last, mismatched, unverified }
 }
 
 /**

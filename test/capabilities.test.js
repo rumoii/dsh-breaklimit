@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { MODE_BUDGETS, RUNTIME_TARGET, applyModeBudget, readRuntimeLimits } from '../src/host/capabilities.js'
+import { MODE_BUDGETS, RUNTIME_TARGET, applyModeBudget, readRuntimeLimits, resolveBudgets } from '../src/host/capabilities.js'
 
 function volatileSlot(initial) {
   // 宿主的 Volatile 只有 get()。这里刻意不提供 set()，以免测试掩盖这一点。
@@ -94,4 +94,34 @@ test('没有 loader 时全部跳过，不抛错', async () => {
   const result = await applyModeBudget({}, 'recommended')
   assert.equal(result.applied.length, 0)
   assert.equal(result.skipped.length, 3)
+})
+
+test('resolveBudgets 缺配置时回落到内置两档', () => {
+  assert.equal(resolveBudgets({}), MODE_BUDGETS)
+  assert.equal(resolveBudgets(undefined), MODE_BUDGETS)
+  const custom = {
+    recommended: { ...MODE_BUDGETS.recommended },
+    unrestricted: { ...MODE_BUDGETS.unrestricted },
+  }
+  assert.equal(resolveBudgets({ budgets: custom }), custom)
+})
+
+test('配置里的预算被提交，不拿内置值顶替', async () => {
+  const calls = []
+  const ctx = {
+    loader: {
+      resolve(id) {
+        return { async update(options) { calls.push({ id, config: options.config }) } }
+      },
+    },
+  }
+  const budgets = {
+    recommended: { timeoutMs: 11, maxTimeoutMs: 22, maxOutputBytes: 33, maxDepth: 44 },
+    unrestricted: MODE_BUDGETS.unrestricted,
+  }
+  await applyModeBudget(ctx, 'recommended', budgets)
+  const shell = calls.find(call => call.id === 'bash-sandbox')
+  assert.deepEqual(shell.config, { timeoutMs: 11, maxTimeoutMs: 22, maxOutputBytes: 33 })
+  const sub = calls.find(call => call.id === 'subagent')
+  assert.deepEqual(sub.config, { maxDepth: 44 })
 })

@@ -101,6 +101,31 @@ test('状态文本报告真实数据，未配置宿主根时明确说出来', ()
   assert.match(text, /空闲/)
 })
 
+test('档位读不到时状态说明来源与降级，读得到时不加噪音行', () => {
+  const base = {
+    enabled: true,
+    mode: 'read-only',
+    target: { version: '0.2.1-rc.2', commit: 'a'.repeat(40) },
+    hostRoot: 'D:/host',
+    preflight: { ok: true, code: 'ok', pendingFiles: 0 },
+    applied: null,
+    inject: { ok: true, code: 'ok', message: '', file: 'X:/inject.md', bytes: 1 },
+    rules: [],
+    lock: { busy: false, operationId: null },
+    seams: { approval: 0, toolGate: 0, editIntent: 0, assemble: 0, preStep: 0, hardenHits: 0, hardenMisses: 0 },
+  }
+  const broken = formatStatusText({
+    ...base,
+    sandbox: { available: false, mode: null, error: '宿主未提供 sandboxPolicy' },
+  })
+  assert.match(broken, /档位来源\s+不可判定（宿主未提供 sandboxPolicy）/u)
+  const usable = formatStatusText({
+    ...base,
+    sandbox: { available: true, mode: 'danger-full-access', error: null },
+  })
+  assert.equal(usable.includes('档位来源'), false)
+})
+
 test('状态文本列出预检阻断项', () => {
   const status = {
     enabled: false,

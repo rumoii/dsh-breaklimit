@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import { Config } from '../src/plugin.js'
+import { MODE_BUDGETS } from '../src/host/capabilities.js'
 
 const validate = Config['~standard'].validate
 
@@ -15,7 +16,12 @@ test('空配置补齐全套默认值，默认数组不共享', () => {
       hostRoot: '',
       allowedHosts: [],
       order: 8999,
+      budgets: {
+        recommended: { timeoutMs: 1200000, maxTimeoutMs: 1200000, maxOutputBytes: 524288, maxDepth: 2 },
+        unrestricted: { timeoutMs: 9999000, maxTimeoutMs: 9999000, maxOutputBytes: 1048576, maxDepth: 5 },
+      },
     })
+    assert.deepEqual(result.value.budgets, MODE_BUDGETS, '默认预算必须与内置两档逐字一致')
   }
   const first = validate({})
   first.value.allowedHosts.push('example.local')
@@ -37,6 +43,7 @@ test('显式值覆盖默认值，未知键原样保留', () => {
     hostRoot: 'D:/host',
     allowedHosts: ['nas.local:3081', '127.0.0.1'],
     order: 10300,
+    budgets: MODE_BUDGETS,
     experimentalFlag: true,
   })
 })
@@ -62,10 +69,44 @@ test('已知键类型写错逐个报位置，非对象输入直接拒', () => {
   assert.deepEqual(validate([]), { issues: [{ message: '插件配置必须是对象' }] })
 })
 
-test('装配补丁里的行配置键与 schema 已知键一致', () => {
+test('预算覆盖只改指定档，其余档与其余键保持默认', () => {
+  const result = validate({ budgets: { unrestricted: { maxDepth: 8 } } })
+  assert.equal(result.value.budgets.unrestricted.maxDepth, 8)
+  assert.equal(result.value.budgets.unrestricted.timeoutMs, 9999000)
+  assert.deepEqual(result.value.budgets.recommended, MODE_BUDGETS.recommended)
+})
+
+test('预算写错名字或多给键直接报，不静默忽略', () => {
+  const result = validate({
+    budgets: {
+      fast: {},
+      recommended: { timeoutMs: 0, nope: 1, maxTimeoutMs: 5 },
+      unrestricted: { maxOutputBytes: '1MB' },
+    },
+  })
+  assert.deepEqual(result.issues.map(issue => issue.path.join('.')), [
+    'budgets.fast',
+    'budgets.recommended.timeoutMs',
+    'budgets.recommended.nope',
+    'budgets.recommended',
+    'budgets.unrestricted.maxOutputBytes',
+  ])
+  assert.deepEqual(validate({ budgets: [] }).issues[0].path, ['budgets'])
+})
+
+test('只抬 timeoutMs 不抬 maxTimeoutMs 时装载期报错', () => {
+  const result = validate({ budgets: { recommended: { timeoutMs: 5000000 } } })
+  assert.equal(result.issues.length, 1)
+  assert.match(result.issues[0].message, /maxTimeoutMs/u)
+  assert.deepEqual(result.issues[0].path, ['budgets', 'recommended'])
+})
+
+test('装配补丁里的行配置键都是 schema 已知键', () => {
   const yaml = fs.readFileSync(new URL('../src/bundle.yml', import.meta.url), 'utf8')
   const row = yaml.slice(yaml.indexOf("name: 'rumo-dsh-breaklimit'"))
   const keys = [...row.matchAll(/^\s{8}([A-Za-z][\w]*):/gmu)].map(match => match[1]).sort()
   assert.deepEqual(keys, ['allowedHosts', 'enabled', 'hostRoot', 'injectFile', 'order'])
-  assert.deepEqual(Object.keys(validate({}).value).sort(), keys)
+  const known = validate({}).value
+  for (const key of keys) assert.equal(Object.hasOwn(known, key), true, `${key} 必须在 schema 里`)
+  assert.deepEqual(Object.keys(known).sort(), [...keys, 'budgets'].sort())
 })

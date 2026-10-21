@@ -2,7 +2,7 @@
 import { resolveHome } from './patch/state.js'
 import { ensureInitialState } from './context/rules.js'
 import { registerSeams } from './host/seams.js'
-import { applyModeBudget } from './host/capabilities.js'
+import { applyModeBudget, resolveBudgets } from './host/capabilities.js'
 import { promptMode, readMode } from './context/prompt.js'
 import { registerCommands } from './host/commands.js'
 import { registerTools } from './host/tools.js'
@@ -50,7 +50,8 @@ export function apply(ctx, config = {}) {
   }
 
   // 执行层预算随模式提交：走 Loader 的 volatile 提交，条件不成立时会退回静态基线。
-  void applyModeBudget(ctx, readMode(resolveHome()))
+  // 预算值来自配置里的 budgets，缺省用内置两档。
+  void applyModeBudget(ctx, readMode(resolveHome()), resolveBudgets(config))
 
   registerSeams(ctx, config, runtime, order)
   registerCommands(ctx, config, runtime)

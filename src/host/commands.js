@@ -7,7 +7,7 @@ import { buildStatus, formatStatusText } from './status.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
-import { MODE_BUDGETS, applyModeBudget, readRuntimeLimits } from './capabilities.js'
+import { applyModeBudget, readRuntimeLimits, resolveBudgets } from './capabilities.js'
 import { inspectPatches } from '../patch/service.js'
 import { resolvePatches } from '../patch/patch-selection.js'
 import { diffPrompt, formatDiff, formatUpgrade, importRule, upgradeReport } from './inspect.js'
@@ -165,7 +165,8 @@ export function registerCommands(ctx, config, runtime) {
 export function doctorReport(ctx, config) {
   const home = resolveHome()
   const mode = readMode(home)
-  const expected = MODE_BUDGETS[mode]
+  // 诊断与实际提交读同一份预算；否则覆盖配置后 doctor 会拿内置值误报不一致。
+  const expected = resolveBudgets(config)[mode]
   const now = readRuntimeLimits(ctx)
   const lines = [`提示词模式  ${mode}`]
   const problems = []

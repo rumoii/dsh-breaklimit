@@ -3,6 +3,7 @@
 ## 未发布
 
 - 兼容性与配置按 DSH 插件规范声明：`package.json` 用 `engines.dsh: 0.2.1-rc.2` 取代自定义 `dshTarget`，安装与启动由宿主按该版本判定，版本不符时跳过本组合包；新增 Standard Schema 形式的 `Config`，装载前校验行配置并补齐默认值，未知键原样保留、已知键类型错误报出位置。对账工具与发布检查改读 `engines.dsh`。
+- 执行层预算进入配置：`budgets.recommended` / `budgets.unrestricted` 可覆盖超时、超时上限、输出上限与子代理深度，缺省值与原内置两档一致；写错键名、非正整数，或 `maxTimeoutMs` 小于 `timeoutMs` 时装载期报错。状态新增 `sandbox` 字段与「档位来源」一行，把「真的只读」与「读不到 sandboxPolicy」分开报告，降级不再静默。预算提交的读回核验拆成两档：装载期 volatile 未就绪记 `unverified`，只有读到值与目标不符才记 `mismatched`；状态读取时用当前读数复核一遍，能读到的从 `unverified` 移除、读到但不相等的转进 `mismatched`，启动时不再误报“没生效”。
 
 ## 0.9.4 · 2026-10-21
 

@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { promptMode, readMode } from '../src/context/prompt.js'
-import { stripHostIdentity } from '../src/host/seams.js'
+import { describeSandboxPolicy, stripHostIdentity } from '../src/host/seams.js'
 import { resolvePatches } from '../src/patch/patch-selection.js'
 import { applyModeBudget } from '../src/host/capabilities.js'
 
@@ -69,6 +69,54 @@ test('doctor 在服务缺席时报「宿主未提供」而不是不一致', asyn
   assert.match(report.text, /提示词模式\s+recommended/u)
   assert.match(report.text, /宿主未提供/u)
   assert.match(report.text, /宿主根\s+未配置/u)
+})
+
+test('doctor 用配置里的预算判定，不拿内置值误报', async (t) => {
+  const { doctorReport } = await import('../src/host/commands.js')
+  const previous = process.env.DSH_HOME
+  const previousRoot = process.env.DSH_BREAKLIMIT_HOST_ROOT
+  process.env.DSH_HOME = tempHome()
+  delete process.env.DSH_BREAKLIMIT_HOST_ROOT
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    if (previousRoot === undefined) delete process.env.DSH_BREAKLIMIT_HOST_ROOT
+    else process.env.DSH_BREAKLIMIT_HOST_ROOT = previousRoot
+  })
+  const slot = value => ({ get: () => value })
+  const ctx = {
+    get(name) {
+      if (name === 'shell') return { config: { timeoutMs: slot(7), maxTimeoutMs: slot(7), maxOutputBytes: slot(7) } }
+      if (name === 'subagents') return { config: { maxDepth: slot(7) } }
+      return undefined
+    },
+  }
+  const config = {
+    hostRoot: '',
+    budgets: {
+      recommended: { timeoutMs: 7, maxTimeoutMs: 7, maxOutputBytes: 7, maxDepth: 7 },
+      unrestricted: { timeoutMs: 9, maxTimeoutMs: 9, maxOutputBytes: 9, maxDepth: 9 },
+    },
+  }
+  const report = doctorReport(ctx, config)
+  assert.doesNotMatch(report.text, /该模式应为/u)
+  assert.match(report.text, /bash 超时\s+7/u)
+})
+
+test('档位读不到与真的只读分开报告', () => {
+  const absent = describeSandboxPolicy({ get: () => undefined })
+  assert.equal(absent.available, false)
+  assert.match(absent.error, /未提供/u)
+
+  const broken = describeSandboxPolicy({ get: () => ({ resolve() { throw new Error('boom') } }) })
+  assert.equal(broken.available, false)
+  assert.match(broken.error, /boom/u)
+
+  const empty = describeSandboxPolicy({ get: () => ({ resolve: () => ({}) }) })
+  assert.equal(empty.available, false)
+
+  const ok = describeSandboxPolicy({ get: () => ({ resolve: () => ({ mode: 'danger-full-access' }) }) })
+  assert.deepEqual(ok, { available: true, mode: 'danger-full-access', error: null })
 })
 
 test('readMode 从磁盘读出模式，读不到或损坏时回落默认', () => {
