@@ -1506,6 +1506,23 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       closeSettingsLabel: "关闭设置，查看会话",
       helpTitle: "从配置到生效",
       helpIntro: "先选择提示词模式，再挑选源码补丁。应用前检查影响与快照，应用后重启同一宿主。",
+      updateDialogTitle: "版本与更新",
+      updateBadgeIdle: "查看版本与更新",
+      updateBadgeHasUpdate: (v) => `有新版本 ${String(v)}，点击查看`,
+      updateChecking: "正在检查…",
+      updateCheck: "检查更新",
+      updateLatest: "已是最新版本",
+      updateAvailable: (v) => `有新版本 ${String(v)}`,
+      updateView: "查看更新",
+      updateFailed: "连不上 GitHub",
+      updateFailedHint: "检查更新会读取 HTTPS_PROXY 环境变量，或 git 的 http.proxy 配置。国内网络通常需要代理。",
+      updateDismiss: "忽略此版本",
+      updateDismissed: (v) => `已忽略 ${String(v)}，手动检查仍会显示`,
+      updateLastChecked: (t) => `上次检查：${String(t)}`,
+      updateNeverChecked: "还没检查过",
+      updateAutoCheck: "每天自动检查一次",
+      updateAutoCheckHint: "打开设置面板或浮窗时检查，每天最多一次。",
+      updateDockHint: (v) => `${String(v)} 已发布 · 查看更新`,
       helpEffect: "源码补丁重启宿主后加载；提示词与模式下一轮对话生效；长期规则激活后写入指令文件；词库保存后新开会话生效。",
       guideTitle: "第一次配置，按这三步来",
       guideProgress: (n) => `已完成 ${String(n)} / 3`,
@@ -2279,6 +2296,23 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       closeSettingsLabel: "Close settings and return to the chat",
       helpTitle: "From setup to effect",
       helpIntro: "Pick a prompt mode first, then choose the source patches. Review the impact and snapshot before applying; restart the same host afterwards.",
+      updateDialogTitle: "Version and updates",
+      updateBadgeIdle: "View version and updates",
+      updateBadgeHasUpdate: (v) => `Version ${String(v)} is available, click to view`,
+      updateChecking: "Checking…",
+      updateCheck: "Check for updates",
+      updateLatest: "Already up to date",
+      updateAvailable: (v) => `Version ${String(v)} is available`,
+      updateView: "View release",
+      updateFailed: "Cannot reach GitHub",
+      updateFailedHint: "The check reads the HTTPS_PROXY environment variable or git's http.proxy setting. Networks that block GitHub usually need a proxy.",
+      updateDismiss: "Ignore this version",
+      updateDismissed: (v) => `${String(v)} is ignored; manual checks still show it`,
+      updateLastChecked: (t) => `Last checked ${String(t)}`,
+      updateNeverChecked: "Never checked",
+      updateAutoCheck: "Check once a day automatically",
+      updateAutoCheckHint: "Checks when the settings panel or the dock opens, at most once per day.",
+      updateDockHint: (v) => `${String(v)} released · view update`,
       helpEffect: "Source patches load after a host restart; prompt and mode changes apply from the next turn; rules take effect once activated into instruction files; the word list applies to new sessions after saving.",
       guideTitle: "First-time setup in three steps",
       guideProgress: (n) => `Done ${String(n)} / 3`,
@@ -5137,6 +5171,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [wordsQuery, setWordsQuery] = useState("")
     const [wordsPreview, setWordsPreview] = useState("")
     const [, bump] = useState(0)
+    // 更新状态放在状态列表末尾：测试桩按 hook 调用序号注入既有状态，
+    // 插在中间会让后面每一个的序号都错位。
+    const [updateInfo, setUpdateInfo] = useState(null)
     const mounted = useRef(true)
     const noticeTimers = useRef({})
     // toast 自动消失的计时器；先于清理函数声明，清理路径引用它才不依赖执行时机。
@@ -5267,6 +5304,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     useEffect(() => { void load() }, [load])
 
+    // 打开设置面板是「每天第一次」的触发点之一。接口本身幂等：当天已查过就返回落盘
+    // 结果，不会再发请求；失败也不打扰，面板照常可用。
+    useEffect(() => {
+      let alive = true
+      get("/update/auto")
+        .then(res => { if (alive && res?.data) setUpdateInfo(res.data) })
+        .catch(() => {})
+      return () => { alive = false }
+    }, [])
+
     // 词库是两个挂载点共用的一份状态（见 createAliasStore）；这里只订阅重绘。
     // 首次读取由 load() 负责，不在这里再来一次——那会让挂载瞬间发两个 GET /alias。
     useEffect(() => aliasStore.subscribe(() => { if (mounted.current) bump(value => value + 1) }), [])
@@ -5365,6 +5412,102 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           h("p", { style: S.small }, T.helpEffect)),
       })
     }, [openDialog])
+
+    /**
+     * 版本与更新弹窗。每次状态变化都重新 openDialog 一份新 spec——Dialog 的 open 不变，
+     * 只换内容，不会重复 showModal，也不会把焦点甩出去。
+     */
+    const openUpdate = useCallback(() => {
+      let view = updateInfo
+      let checking = false
+      let error = ""
+
+      const render = () => {
+        const checkedAt = typeof view?.checkedAt === "number" ? view.checkedAt : 0
+        const autoOn = view?.autoCheckUpdates !== false
+        const rows = [
+          h("p", { style: S.text },
+            h("strong", null, `v${PLUGIN_VERSION}`),
+            " · ",
+            checkedAt > 0 ? T.updateLastChecked(formatAgo(checkedAt)) : T.updateNeverChecked),
+        ]
+
+        if (checking) {
+          rows.push(h("p", { style: S.small }, T.updateChecking))
+        } else if (error !== "") {
+          rows.push(h(Notice, { tone: "warn", title: T.updateFailed, body: T.updateFailedHint }))
+        } else if (view?.hasUpdate === true) {
+          rows.push(h("div", { style: S.row },
+            h("strong", null, T.updateAvailable(view.latestVersion)),
+            h(Button, {
+              size: "small",
+              kind: "primary",
+              onClick: () => {
+                if (typeof window !== "undefined" && typeof window.open === "function") {
+                  window.open(view.releaseUrl, "_blank", "noopener,noreferrer")
+                }
+              },
+            }, T.updateView),
+            h(Button, { size: "small", onClick: () => { void dismiss(view.latestVersion) } }, T.updateDismiss)))
+        } else if (view?.newer === true) {
+          rows.push(h("p", { style: S.small }, T.updateDismissed(view.latestVersion)))
+        } else if (checkedAt > 0) {
+          rows.push(h("p", { style: S.small }, T.updateLatest))
+        }
+
+        rows.push(h("div", { style: S.row },
+          h(Button, { size: "small", off: checking, reason: T.updateChecking, onClick: () => { void checkNow() } },
+            checking ? T.updateChecking : T.updateCheck)))
+
+        rows.push(h("div", { style: S.row },
+          h(Switch, { on: autoOn, label: T.updateAutoCheck, onToggle: (next) => { void toggleAuto(next) } }),
+          h("span", { style: S.text }, T.updateAutoCheck)))
+        rows.push(h("p", { style: S.small }, T.updateAutoCheckHint))
+
+        openDialog({
+          title: T.updateDialogTitle,
+          tone: "accent",
+          cancelText: T.dismissShort,
+          body: h("div", { style: S.wordEditorFields }, ...rows),
+        })
+      }
+
+      const adopt = (data) => {
+        if (data === null || data === undefined) return
+        view = data
+        setUpdateInfo(data)
+      }
+
+      const checkNow = async () => {
+        checking = true
+        error = ""
+        render()
+        try {
+          adopt((await post("/update/check", {})).data)
+        } catch (failure) {
+          error = String(failure?.code ?? "update_unreachable")
+        } finally {
+          checking = false
+          render()
+        }
+      }
+
+      const dismiss = async (version) => {
+        try {
+          adopt((await post("/update/dismiss", { version })).data)
+        } catch { /* 忽略失败：弹窗保持原样即可，不额外打扰 */ }
+        render()
+      }
+
+      const toggleAuto = async (next) => {
+        try {
+          adopt((await post("/update/auto-check", { enabled: next })).data)
+        } catch { /* 同上 */ }
+        render()
+      }
+
+      render()
+    }, [updateInfo, openDialog, setUpdateInfo])
 
     const accept = useCallback(() => {
       const current = dialog
@@ -6086,7 +6229,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h("div", { style: S.headText },
           h("div", { style: S.titleRow },
             h("h2", { style: S.title }, T.title),
-            h(Tag, null, PLUGIN_VERSION)),
+            // 徽章本身不变形，只包一层无样式的按钮作为「版本与更新」的入口。
+            h("button", {
+              type: "button",
+              className: "bkl-version",
+              style: { border: 0, background: "none", padding: 0, cursor: "pointer", display: "inline-flex" },
+              "aria-label": updateInfo?.hasUpdate === true ? T.updateBadgeHasUpdate(updateInfo.latestVersion) : T.updateBadgeIdle,
+              title: updateInfo?.hasUpdate === true ? T.updateBadgeHasUpdate(updateInfo.latestVersion) : T.updateBadgeIdle,
+              onClick: openUpdate,
+            }, h(Tag, updateInfo?.hasUpdate === true ? { tone: "accent" } : {}, PLUGIN_VERSION))),
           h("p", { style: S.lead }, T.lead)),
         h("div", { style: S.headAside },
           loadedAt > 0 ? h("span", { style: S.stamp, "aria-live": "off" }, T.refreshedAt(formatAgo(loadedAt))) : null,
@@ -6267,6 +6418,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       borderTop: `1px solid ${tk.line1}`,
     },
     sectionFirst: { paddingTop: 0, borderTop: "none" },
+    // 新版提示条：横贯标题栏下方，点击直达 release 页。没有新版时不渲染，不占高度。
+    updateBar: {
+      display: "flex", alignItems: "center", gap: 6, width: "100%",
+      padding: "7px 12px", border: 0, borderTop: "none", borderBottom: `1px solid ${tk.line1}`,
+      background: tk.accentSoft, color: tk.accent, cursor: "pointer",
+      font: tk.fontSmallStrong, textAlign: "left",
+    },
     modeGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
     modeCard: {
       display: "flex",
@@ -6405,6 +6563,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [tierFailed, setTierFailed] = useState(false)
     const [pendingTier, setPendingTier] = useState(null)
     const [open, setOpen] = useState(false)
+    const [dockUpdate, setDockUpdate] = useState(null)
     const [fromInput, setFromInput] = useState("")
     const [toInput, setToInput] = useState("")
     const [confirmFrom, setConfirmFrom] = useState(null)
@@ -6422,6 +6581,17 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       if (!aliveRef.current) return
       if (typeof tierRes?.data?.tier === "string") setTier(tierRes.data.tier)
     }, [])
+
+    // 展开浮窗是「每天第一次」的另一个触发点。接口幂等：设置面板今天已经查过时，
+    // 这里只拿回落盘结果，不会产生第二次对外请求。失败静默，浮窗照常可用。
+    useEffect(() => {
+      if (!open) return
+      let alive = true
+      get("/update/auto")
+        .then(res => { if (alive && aliveRef.current && res?.data) setDockUpdate(res.data) })
+        .catch(() => {})
+      return () => { alive = false }
+    }, [open])
 
     const switchTier = async (next) => {
       if (next === tier || tierBusy) return
@@ -6715,6 +6885,22 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 "aria-label": T.aliasClose,
                 onClick: () => { setOpen(false); setPendingTier(null) },
               }, h(Icon, { name: "close", size: 14 }))),
+
+            // 有新版本时才占位；放在标题栏和正文之间，滚正文不会把它带走。
+            dockUpdate?.hasUpdate === true
+              ? h("button", {
+                type: "button",
+                className: "dock-update",
+                style: ALIAS.updateBar,
+                onClick: () => {
+                  if (typeof window !== "undefined" && typeof window.open === "function") {
+                    window.open(dockUpdate.releaseUrl, "_blank", "noopener,noreferrer")
+                  }
+                },
+              },
+                h(Icon, { name: "arrow", size: 13 }),
+                h("span", null, T.updateDockHint(dockUpdate.latestVersion)))
+              : null,
             h("div", { style: ALIAS.body },
 
             // 第一节：提示词模式快速切换。点一下只是选中待切换项，确认后才提交。

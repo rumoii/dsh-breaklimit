@@ -1,8 +1,22 @@
+<div align="center">
+
 # dsh-breaklimit
 
 为 DeepSeek Harness 管理宿主补丁、提示词和规则集的插件，提供中英文 Web 设置页。
 
+[![版本](https://img.shields.io/github/v/tags/rumoii/dsh-breaklimit?label=%E7%89%88%E6%9C%AC&color=2a8f7b)](https://github.com/rumoii/dsh-breaklimit/releases)
+[![下载量](https://img.shields.io/github/downloads/rumoii/dsh-breaklimit/total?label=%E4%B8%8B%E8%BD%BD%E9%87%8F&color=2a8f7b)](https://github.com/rumoii/dsh-breaklimit/releases)
+[![Stars](https://img.shields.io/github/stars/rumoii/dsh-breaklimit?label=Stars&color=2a8f7b)](https://github.com/rumoii/dsh-breaklimit/stargazers)
+[![许可证](https://img.shields.io/github/license/rumoii/dsh-breaklimit?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&color=2a8f7b)](LICENSE)
+![Node](https://img.shields.io/badge/Node-22.19%20%C2%B7%2024-4b6b8a)
+
+**[快速安装](#快速安装windows-powershell)** · [安装、升级与排错](docs/install.md) · [命令与 HTTP 接口](docs/reference.md) · [免责声明](DISCLAIMER.md) · [变更记录](CHANGELOG.md)
+
+</div>
+
 当前版本 **0.9.3，内测版**。发布产物和验证边界见 [Releases](https://github.com/rumoii/dsh-breaklimit/releases)；正式版计划为 1.0.0。
+
+## 亮点
 
 - **补丁可控**：逐条选择，应用前检查文件哈希与命中数，失败时尝试事务回滚。
 - **提示词可编辑**：提供 `recommended`（推荐）与 `unrestricted`（完全解放）两档，支持自定义正文。
@@ -44,7 +58,10 @@ git -C "$DshRoot" rev-parse HEAD
 
 ### 2. 准备独立的 Web profile
 
-沿用启动 DSH 时使用的 `DSH_HOME`；未设置时，以下命令使用用户目录下的 `.dsh`。只在 profile 不存在时创建 Web 模板，已有 profile 不会被覆盖：
+沿用启动 DSH 时使用的 `DSH_HOME`；未设置时，以下命令使用用户目录下的 `.dsh`。只在 profile 不存在时创建 Web 模板，已有 profile 不会被覆盖。已有 profile 的 `dsh.profile.bundles` 必须包含 `@deepseek-ai/dsh-web-app`。
+
+<details>
+<summary>展开：新建 Web profile 的完整命令（已有 profile 可跳过）</summary>
 
 ```powershell
 if (-not $env:DSH_HOME) { $env:DSH_HOME = Join-Path $env:USERPROFILE '.dsh' }
@@ -56,7 +73,9 @@ if (-not (Test-Path -LiteralPath $ProfileManifest)) {
 }
 ```
 
-已有 profile 的 `dsh.profile.bundles` 必须包含 `@deepseek-ai/dsh-web-app`。设置页缺失时先看 [对应排查步骤](docs/install.md#常见问题)。
+</details>
+
+设置页缺失时先看 [对应排查步骤](docs/install.md#常见问题)。
 
 ### 3. 安装、预检与应用
 
@@ -135,6 +154,21 @@ node --import tsx/esm apps/cli/src/bin.ts plugin --profile web-breaklimit remove
 
 不要提前删除插件目录或恢复快照。移除依赖不会自动撤销源码补丁，也不会清除用户规则和注入文件。规则写入文件的恢复方式见 [回退与卸载](docs/install.md#回退与卸载)。
 
+## 联网与隐私
+
+插件在本机运行，不收集遥测，不上传任何用户数据——提示词正文、规则、目标词表、宿主路径都只留在本地磁盘。
+
+唯一的对外请求是检查更新：
+
+- 目标是 `https://api.github.com/repos/rumoii/dsh-breaklimit/releases/latest`，用于比较版本号。
+- 频率：每天最多一次，触发点是打开设置面板或展开会话浮窗，同一进程内的两个入口共用一次请求。
+- 请求不携带任何本地路径、凭据、词库或规则内容，也不带 Cookie。
+- GitHub 能看到这次请求的来源 IP 地址。
+- 可以在「版本与更新」弹窗里关闭每天自动检查；关闭后手动检查仍然可用。
+
+网络需要代理时，检查更新会依次读取 `HTTPS_PROXY`（或 `ALL_PROXY`、`HTTP_PROXY`）环境变量、以及 `git config --get http.proxy` 的值。宿主支持在 `$DSH_HOME/.env` 里设置 `HTTPS_PROXY`，写在那里能让插件读到。
+
+
 ## 文档与开发
 
 - [安装、升级、回退与常见问题](docs/install.md)
@@ -152,6 +186,16 @@ npm run check:host -- '<宿主源码树绝对路径>'
 最后两条读取宿主 HEAD；夹具预检不修改宿主工作树，也不能替代实际安装和浏览器验收。
 
 仓库名是 `dsh-breaklimit`，包名和插件标识是 `rumo-dsh-breaklimit`。安装使用目录路径，卸载使用包名。
+
+## 免责声明
+
+使用本项目即视为接受[免责声明](DISCLAIMER.md)的全部条款，要点如下：
+
+- 非营利开源项目，仅供学习与研究使用；不得用于违法违规用途，违者自行承担全部法律后果。
+- 与 DeepSeek 及 DeepSeek Harness 的开发、运营方无任何关联、授权或背书。
+- 补丁、提示词与规则的写入和恢复只发生在本机宿主源码树与 `$DSH_HOME`，不作用于任何外部系统；严禁对未授权目标使用，严禁对中国大陆、香港、澳门的网络目标做任何操作。
+- 软件按现状提供、不附担保；修改宿主源码的风险由使用者自行评估并承担。
+- 违反条款的，使用许可自动终止。
 
 ## 许可证
 

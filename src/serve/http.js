@@ -16,6 +16,7 @@ import { applyModeBudget } from '../host/capabilities.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { readMasks, writeMasks, masksPath, MAX_MASKS, MAX_MASK_TERM } from '../host/masks.js'
+import * as update from '../context/update.js'
 
 export const ROUTE_PREFIX = '/breaklimit'
 
@@ -633,6 +634,59 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       runtime.enabled = parsed.enabled
       return envelope(200, 'toggled', runtime.enabled ? '接管已开启。' : '接管已关闭。', {
         enabled: runtime.enabled,
+      })
+    },
+
+    // 版本与更新。GET 的几条都不联网，只有 check 与 auto 会发请求。
+    'GET /update': () => {
+      const { state } = update.readUpdateState(home())
+      const currentVersion = update.readInstalledVersion()
+      return envelope(200, 'ok', '', {
+        ...update.viewOf(state, currentVersion),
+        proxy: update.proxySource(),
+        releasesUrl: update.RELEASES_URL,
+      })
+    },
+
+    // 每天最多一次。设置面板与浮窗都调它，去重在模块内完成：同一天第二次调用直接
+    // 返回落盘结果，不发请求。
+    'GET /update/auto': async () => {
+      const result = await update.autoCheck({ home: home(), currentVersion: update.readInstalledVersion() })
+      return envelope(200, 'ok', '', { ...result, proxy: update.proxySource() })
+    },
+
+    'POST /update/check': async () => {
+      try {
+        const result = await update.manualCheck({ home: home(), currentVersion: update.readInstalledVersion() })
+        return envelope(200, 'ok', '', { ...result, proxy: update.proxySource() })
+      } catch (error) {
+        const code = error?.code === 'update_invalid' ? 'update_invalid' : 'update_unreachable'
+        return envelope(502, code, String(error?.message ?? '检查更新失败。'), { proxy: update.proxySource() })
+      }
+    },
+
+    // 开关切换立即落盘，不伴随保存按钮，也不触发联网。
+    'POST /update/auto-check': async (req) => {
+      const parsed = parseJsonBody(await readBody(req, bodyLimit))
+      if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
+      if (typeof parsed.enabled !== 'boolean') {
+        return envelope(400, 'invalid_enabled', '需要 enabled 字段且为布尔值。')
+      }
+      const next = update.writeUpdateState(home(), { autoCheckUpdates: parsed.enabled })
+      return envelope(200, 'saved', parsed.enabled ? '已开启每天自动检查。' : '已关闭每天自动检查。', {
+        ...update.viewOf(next, update.readInstalledVersion()),
+      })
+    },
+
+    'POST /update/dismiss': async (req) => {
+      const parsed = parseJsonBody(await readBody(req, bodyLimit))
+      if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
+      if (update.parseVersion(parsed.version) === null) {
+        return envelope(400, 'invalid_version', '需要 x.y.z 格式的 version 字段。')
+      }
+      const next = update.writeUpdateState(home(), { dismissedVersion: parsed.version })
+      return envelope(200, 'saved', '已忽略这个版本。', {
+        ...update.viewOf(next, update.readInstalledVersion()),
       })
     },
   }
