@@ -112,6 +112,7 @@ node tools/rebuild-state.mjs "$DshRoot"
 | 回退报告漂移 | 目标是否被其他工具改动 | 保留目标与快照，人工核对差异 |
 | 端口被占用 | 是否仍有该 profile 实例或其他服务 | 停止自己启动的旧实例，或换空闲端口 |
 | 模式或接缝不符 | 实际沙箱档位、接管开关、权限告警 | 检查 profile 和 home 的后置配置覆盖 |
+| 检查更新提示连不上 GitHub | 网络是否需要代理 | 设置 `HTTPS_PROXY`（可写在 `$DSH_HOME/.env`）或 `git config --get http.proxy`；自动检查当天失败不重试，可手动检查 |
 
 profile 和 home 的 `cordis.patch.yml` 位于 bundle 之后，同名配置可能整体覆盖插件声明。`/breaklimit status` 展示解析后的权限现值；`approval: never` 会让审批在插件接缝之前被拒绝。
 

@@ -127,6 +127,7 @@ node --import tsx/esm apps/cli/src/bin.ts --profile web-breaklimit --port 3082
 3. 在“规则”中填写规则 ID、写入文件和正文，保存后再激活。撤销时恢复原文件或删除插件创建的文件；外部修改会被保留并报告。
 4. 在“词库”中维护目标词替换表，保存后新开会话生效；输入框旁的浮窗可以快速添加，或直接进入词库页。
 5. 用 `/breaklimit off` 暂停本次实例的运行时接管；恢复用 `/breaklimit on`。这两个命令不撤销源码补丁。
+6. 点设置面板顶栏的版本徽章打开「版本与更新」：手动检查更新、忽略某个版本、开关「每天自动检查一次」（缺省开启，每天至多一次）。有新版时顶栏和浮窗给出可见提示，链接到 GitHub Releases。
 
 提示词模式控制文本装配，宿主的沙箱模式控制实际执行边界，两者不是同一个开关。
 
@@ -160,13 +161,14 @@ node --import tsx/esm apps/cli/src/bin.ts plugin --profile web-breaklimit remove
 
 唯一的对外请求是检查更新：
 
-- 目标是 `https://api.github.com/repos/rumoii/dsh-breaklimit/releases/latest`，用于比较版本号。
+- 目标是 `https://api.github.com/repos/rumoii/dsh-breaklimit/releases?per_page=10`（本插件的发布列表），读取后按版本号比较。
 - 频率：每天最多一次，触发点是打开设置面板或展开会话浮窗，同一进程内的两个入口共用一次请求。
-- 请求不携带任何本地路径、凭据、词库或规则内容，也不带 Cookie。
+- 请求头只带插件版本号（`User-Agent: rumo-dsh-breaklimit/<版本>`）；不携带任何本地路径、凭据、词库或规则内容，也不带 Cookie。
 - GitHub 能看到这次请求的来源 IP 地址。
 - 可以在「版本与更新」弹窗里关闭每天自动检查；关闭后手动检查仍然可用。
+- 开关与检查结果保存在 `$DSH_HOME/breaklimit/update.json`；自动检查失败当天不重试，保留上次结果。
 
-网络需要代理时，检查更新会依次读取 `HTTPS_PROXY`（或 `ALL_PROXY`、`HTTP_PROXY`）环境变量、以及 `git config --get http.proxy` 的值。宿主支持在 `$DSH_HOME/.env` 里设置 `HTTPS_PROXY`，写在那里能让插件读到。
+网络需要代理时，检查更新会依次读取 `HTTPS_PROXY`（或 `ALL_PROXY`、`HTTP_PROXY`）环境变量、以及 `git config --get http.proxy` 的值。代理只支持 `http://`（CONNECT 隧道），`https://` 代理会被拒绝并提示。宿主支持在 `$DSH_HOME/.env` 里设置 `HTTPS_PROXY`，写在那里能让插件读到。
 
 
 ## 文档与开发
@@ -193,7 +195,7 @@ npm run check:host -- '<宿主源码树绝对路径>'
 
 - 非营利开源项目，仅供学习与研究使用；不得用于违法违规用途，违者自行承担全部法律后果。
 - 与 DeepSeek 及 DeepSeek Harness 的开发、运营方无任何关联、授权或背书。
-- 补丁、提示词与规则的写入和恢复只发生在本机宿主源码树与 `$DSH_HOME`，不作用于任何外部系统；严禁对未授权目标使用，严禁对中国大陆、香港、澳门的网络目标做任何操作。
+- 补丁、提示词与规则的写入和恢复只发生在本机宿主源码树与 `$DSH_HOME`，不作用于任何外部系统；唯一的对外访问是可关闭的检测更新，只读取本插件自己的 GitHub 发布信息。严禁对未授权目标使用，严禁对中国大陆、香港、澳门的网络目标做任何操作。
 - 软件按现状提供、不附担保；修改宿主源码的风险由使用者自行评估并承担。
 - 违反条款的，使用许可自动终止。
 
