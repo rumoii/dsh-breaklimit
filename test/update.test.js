@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -260,4 +261,67 @@ test('manualCheck 不受「今天查过」影响，并刷新日期', async () =>
   })
   assert.equal(calls, 1, '手动检查随时生效')
   assert.equal(result.latestVersion, '0.9.5')
+})
+
+test('writeUpdateState：发现损坏的 update.json 先备份再重建', () => {
+  const home = tempHome()
+  fs.mkdirSync(path.dirname(updateStatePath(home)), { recursive: true })
+  fs.writeFileSync(updateStatePath(home), '{ not json', 'utf8')
+
+  writeUpdateState(home, { lastAutoCheckDay: '2026-03-01' })
+
+  assert.equal(readUpdateState(home).kind, 'ok')
+  const backupRoot = path.join(home, 'dsh-breaklimit-backup')
+  const dirs = fs.readdirSync(backupRoot)
+  assert.equal(dirs.length, 1, '损坏内容要留一份备份')
+  assert.equal(
+    fs.readFileSync(path.join(backupRoot, dirs[0], 'update.json'), 'utf8'),
+    '{ not json',
+    '备份必须逐字节保留损坏内容',
+  )
+})
+
+test('writeUpdateState：备份失败时拒绝写入，损坏文件一个字节都不动', () => {
+  const home = tempHome()
+  fs.mkdirSync(path.dirname(updateStatePath(home)), { recursive: true })
+  fs.writeFileSync(updateStatePath(home), '{ not json', 'utf8')
+  fs.writeFileSync(path.join(home, 'dsh-breaklimit-backup'), '占位成文件，让备份目录建不出来', 'utf8')
+
+  assert.throws(() => writeUpdateState(home, { lastAutoCheckDay: '2026-03-01' }))
+  assert.equal(fs.readFileSync(updateStatePath(home), 'utf8'), '{ not json')
+})
+
+test('fetchLatestRelease：拒绝 https:// 代理，不把它当明文用', async () => {
+  await assert.rejects(
+    fetchLatestRelease({ proxy: 'https://127.0.0.1:1' }),
+    error => error instanceof UpdateError && error.code === 'update_unreachable' && error.message.includes('只支持'),
+  )
+})
+
+test('fetchLatestRelease：连不上代理时报 update_unreachable', async () => {
+  await assert.rejects(
+    fetchLatestRelease({ proxy: 'http://127.0.0.1:1' }),
+    error => error instanceof UpdateError && error.code === 'update_unreachable',
+  )
+})
+
+test('fetchLatestRelease：代理 CONNECT 被拒时报状态码，请求头带 Proxy-Authorization', async () => {
+  const seen = []
+  const server = http.createServer()
+  server.on('connect', (request, socket) => {
+    seen.push({ url: request.url, headers: request.headers })
+    socket.end('HTTP/1.1 407 Proxy Authentication Required\r\n\r\n')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await assert.rejects(
+      fetchLatestRelease({ proxy: `http://user:pass@127.0.0.1:${String(server.address().port)}` }),
+      error => error instanceof UpdateError && error.code === 'update_unreachable' && error.message.includes('407'),
+    )
+  } finally {
+    server.close()
+  }
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].url, 'api.github.com:443')
+  assert.equal(seen[0].headers['proxy-authorization'], 'Basic dXNlcjpwYXNz')
 })

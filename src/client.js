@@ -1518,6 +1518,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       updateView: "查看更新",
       updateFailed: "连不上 GitHub",
       updateFailedHint: "检查更新会读取 HTTPS_PROXY 环境变量，或 git 的 http.proxy 配置。国内网络通常需要代理。",
+      updateFailedInvalid: "检查结果无法解析",
+      updateFailedInvalidHint: "GitHub 有响应但内容不对，通常是临时故障；稍后再试。",
       updateDismiss: "忽略此版本",
       updateDismissed: (v) => `已忽略 ${String(v)}，手动检查仍会显示`,
       updateLastChecked: (t) => `上次检查：${String(t)}`,
@@ -2308,6 +2310,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       updateView: "View release",
       updateFailed: "Cannot reach GitHub",
       updateFailedHint: "The check reads the HTTPS_PROXY environment variable or git's http.proxy setting. Networks that block GitHub usually need a proxy.",
+      updateFailedInvalid: "Cannot parse the check result",
+      updateFailedInvalidHint: "GitHub responded but the content was unusable, usually temporary. Try again later.",
       updateDismiss: "Ignore this version",
       updateDismissed: (v) => `${String(v)} is ignored; manual checks still show it`,
       updateLastChecked: (t) => `Last checked ${String(t)}`,
@@ -5437,7 +5441,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         if (checking) {
           rows.push(h("p", { style: S.small }, T.updateChecking))
         } else if (error !== "") {
-          rows.push(h(Notice, { tone: "warn", title: T.updateFailed, body: T.updateFailedHint }))
+          const invalid = error === "update_invalid"
+          rows.push(h(Notice, { tone: "warn", title: invalid ? T.updateFailedInvalid : T.updateFailed, body: invalid ? T.updateFailedInvalidHint : T.updateFailedHint }))
         } else if (view?.hasUpdate === true) {
           rows.push(h("div", { style: S.row },
             h("strong", null, T.updateAvailable(view.latestVersion)),

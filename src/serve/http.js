@@ -639,10 +639,11 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
 
     // 版本与更新。GET 的几条都不联网，只有 check 与 auto 会发请求。
     'GET /update': () => {
-      const { state } = update.readUpdateState(home())
+      const { kind, state } = update.readUpdateState(home())
       const currentVersion = update.readInstalledVersion()
       return envelope(200, 'ok', '', {
         ...update.viewOf(state, currentVersion),
+        updateState: kind,
         proxy: update.proxySource(),
         releasesUrl: update.RELEASES_URL,
       })
@@ -660,8 +661,12 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         const result = await update.manualCheck({ home: home(), currentVersion: update.readInstalledVersion() })
         return envelope(200, 'ok', '', { ...result, proxy: update.proxySource() })
       } catch (error) {
-        const code = error?.code === 'update_invalid' ? 'update_invalid' : 'update_unreachable'
-        return envelope(502, code, String(error?.message ?? '检查更新失败。'), { proxy: update.proxySource() })
+        if (error instanceof update.UpdateError) {
+          return envelope(502, error.code, error.message, { proxy: update.proxySource() })
+        }
+        // 非 UpdateError 是本方的内部故障（fs 报错等），文案自带绝对路径，不出网。
+        logInternal('update_check_failed', error)
+        return envelope(502, 'update_unreachable', '检查更新失败。', { proxy: update.proxySource() })
       }
     },
 
@@ -681,10 +686,12 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /update/dismiss': async (req) => {
       const parsed = parseJsonBody(await readBody(req, bodyLimit))
       if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
-      if (update.parseVersion(parsed.version) === null) {
+      const version = update.parseVersion(parsed.version)
+      if (version === null) {
         return envelope(400, 'invalid_version', '需要 x.y.z 格式的 version 字段。')
       }
-      const next = update.writeUpdateState(home(), { dismissedVersion: parsed.version })
+      // 归一化后落盘：latestVersion 不带 v 前缀，存原串会与它永远不相等，忽略永不生效。
+      const next = update.writeUpdateState(home(), { dismissedVersion: version.join('.') })
       return envelope(200, 'saved', '已忽略这个版本。', {
         ...update.viewOf(next, update.readInstalledVersion()),
       })

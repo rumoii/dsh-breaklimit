@@ -110,10 +110,53 @@ export function readUpdateState(home) {
  * @returns {object} 合并后的状态。
  */
 export function writeUpdateState(home, patch) {
-  const { state } = readUpdateState(home)
-  const next = { ...state, ...patch }
+  const current = readUpdateState(home)
+  // 损坏的文件里可能存着「关闭自动检查」这类偏好：先按 rules.json 的恢复先例备份，
+  // 备份不成就不写——宁可留在损坏态，也不把用户的选择悄悄抹掉。
+  if (current.kind === 'corrupt') backUpCorruptState(home)
+  const next = { ...current.state, ...patch }
   atomicWrite(updateStatePath(home), `${JSON.stringify(next, null, 2)}\n`)
   return next
+}
+
+/**
+ * 把损坏的 update.json 备份到 $DSH_HOME/dsh-breaklimit-backup/<时间戳>/update.json。
+ * 与规则恢复的备份同一套纪律：字节核对、同秒撞名用随机后缀、任何失败都不动原文件。
+ *
+ * @param {string} home - $DSH_HOME 路径。
+ */
+function backUpCorruptState(home) {
+  const file = updateStatePath(home)
+  const original = fs.readFileSync(file)
+  // 目录名用本地时间：用户是照着自己看到的时间去磁盘上找的。
+  const now = new Date()
+  const pad = value => String(value).padStart(2, '0')
+  const stamp = `${String(now.getFullYear())}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const backupRoot = path.join(home, 'dsh-breaklimit-backup')
+  let backupDir = null
+  try {
+    fs.mkdirSync(backupRoot, { recursive: true })
+    const preferred = path.join(backupRoot, stamp)
+    try {
+      fs.mkdirSync(preferred)
+      backupDir = preferred
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      backupDir = fs.mkdtempSync(`${preferred}-`)
+    }
+    const backupFile = path.join(backupDir, 'update.json')
+    fs.copyFileSync(file, backupFile, fs.constants.COPYFILE_EXCL)
+    if (!fs.readFileSync(backupFile).equals(original)) throw new Error('备份字节与原文件不符')
+    if (!fs.readFileSync(file).equals(original)) throw new Error('原文件在备份期间被改动')
+  } catch (error) {
+    try {
+      if (backupDir !== null) fs.rmSync(backupDir, { recursive: true, force: true })
+    } catch {
+      // 清理失败不盖住原始错误。
+    }
+    throw new Error(`备份损坏的更新状态失败：${String(error?.message ?? error)}`)
+  }
 }
 
 /** 自动检查是否开启。字段缺省视为开启——新装用户默认用上这个功能。 */
@@ -209,8 +252,9 @@ function requestViaProxy(url, proxyUrl, timeoutMs, headers) {
       reject(new UpdateError('update_unreachable', '代理地址或目标地址无法解析。'))
       return
     }
-    if (proxy.protocol !== 'http:' && proxy.protocol !== 'https:') {
-      reject(new UpdateError('update_unreachable', '目前只支持 http/https 代理。'))
+    if (proxy.protocol !== 'http:') {
+      // CONNECT 隧道是明文建的，https:// 代理会把凭据和请求裸发到端口上，直接拒绝。
+      reject(new UpdateError('update_unreachable', '只支持 http:// 代理；https:// 代理不支持，请改用 http:// 代理或直连。'))
       return
     }
 
@@ -387,14 +431,19 @@ export function autoCheck({ home, currentVersion, check = defaultCheck, now = ()
     if (!isAutoCheckOn(state)) return { ...viewOf(state, currentVersion), lastError: null }
     const today = localDay(now())
     if (state.lastAutoCheckDay === today) return { ...viewOf(state, currentVersion), lastError: null }
-    const marked = writeUpdateState(home, { lastAutoCheckDay: today })
     try {
-      const result = await check()
-      const next = writeUpdateState(home, result)
-      return { ...viewOf(next, currentVersion), lastError: null }
+      const marked = writeUpdateState(home, { lastAutoCheckDay: today })
+      try {
+        const result = await check()
+        const next = writeUpdateState(home, result)
+        return { ...viewOf(next, currentVersion), lastError: null }
+      } catch (error) {
+        // 失败不动 latestVersion，只是今天不再试；下次打开面板仍显示上次查到的结果。
+        return { ...viewOf(marked, currentVersion), lastError: error?.code ?? 'update_unreachable' }
+      }
     } catch (error) {
-      // 失败不动 latestVersion，只是今天不再试；下次打开面板仍显示上次查到的结果。
-      return { ...viewOf(marked, currentVersion), lastError: error?.code ?? 'update_unreachable' }
+      // 状态写不进去（例如损坏文件备份失败）时退回读到的状态，不把面板拖垮。
+      return { ...viewOf(state, currentVersion), lastError: error?.code ?? 'update_unreachable' }
     }
   })().finally(() => { pendingAuto = null })
   return pendingAuto
