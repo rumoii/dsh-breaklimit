@@ -14,7 +14,7 @@
 
 </div>
 
-当前版本 **0.9.3，内测版**。发布产物和验证边界见 [Releases](https://github.com/rumoii/dsh-breaklimit/releases)；正式版计划为 1.0.0。
+当前版本 **0.9.4，内测版**。发布产物和验证边界见 [Releases](https://github.com/rumoii/dsh-breaklimit/releases)；正式版计划为 1.0.0。
 
 ## 亮点
 
@@ -44,7 +44,7 @@
 在你存放项目的目录执行：
 
 ```powershell
-git clone --branch v0.9.3 --depth 1 https://github.com/rumoii/dsh-breaklimit.git
+git clone --branch v0.9.4 --depth 1 https://github.com/rumoii/dsh-breaklimit.git
 $PluginRoot = (Resolve-Path .\dsh-breaklimit).Path
 $DshRoot = 'D:\host\deepseek-harness' # 改成你的宿主源码目录
 $env:DSH_BREAKLIMIT_HOST_ROOT = $DshRoot

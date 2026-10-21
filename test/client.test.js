@@ -2534,9 +2534,9 @@ test('P2 壳层：顶栏品牌与版本徽章、帮助钮与可选关闭钮', ()
   assert.equal(Boolean(helpBtn), true, '应渲染帮助图标钮（helpLabel）')
   assert.equal(helpBtn.props.kind, 'icon', '帮助钮应为 icon 形态')
 
-  // 2. 版本徽章：无 tone 的 Tag，文本为 0.9.3
-  const versionTag = findAll(tree, n => n.type === noClose.exported.Tag && textOf(n) === '0.9.3')[0]
-  assert.equal(Boolean(versionTag), true, '顶栏应渲染版本徽章 0.9.3')
+  // 2. 版本徽章：无 tone 的 Tag，文本为 0.9.4
+  const versionTag = findAll(tree, n => n.type === noClose.exported.Tag && textOf(n) === '0.9.4')[0]
+  assert.equal(Boolean(versionTag), true, '顶栏应渲染版本徽章 0.9.4')
   assert.equal(versionTag.props?.tone, undefined, '版本徽章不应带 tone（不出圆点）')
 
   // 3. 传 close：渲染关闭钮且点击会调用
@@ -2558,7 +2558,7 @@ test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', ()
   const hint = findAll(tree, n => n.type === 'span' && textOf(n) === '有新版本 0.9.9')[0]
   assert.equal(Boolean(hint), true, '有新版时应渲染可见文字，不能只靠变色或 title')
 
-  const badge = findAll(tree, n => n.type === harness.exported.Tag && textOf(n) === '0.9.3')[0]
+  const badge = findAll(tree, n => n.type === harness.exported.Tag && textOf(n) === '0.9.4')[0]
   assert.equal(badge.props?.tone, 'accent', '同时徽章仍是强调色')
 
   // 没有新版时不留空白占位。

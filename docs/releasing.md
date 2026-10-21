@@ -27,12 +27,12 @@ GitHub 读取草稿需要写权限。下载和最终元数据核对任务只运�
 本地等价操作（使用当前 main 的工具，输出目录须为新目录或内容完全相同）：
 
 ```powershell
-$ReleaseTag = 'v0.9.3'
+$ReleaseTag = 'v0.9.4'
 $SourceSha = git rev-parse "$ReleaseTag^{}"
 $AssetsDir = Join-Path $env:TEMP "dsh-release-$ReleaseTag"
 node tools/release.mjs pack . $ReleaseTag $SourceSha $AssetsDir
 node tools/release.mjs verify . $ReleaseTag $SourceSha $AssetsDir
-node tools/github-release.mjs prepare . $ReleaseTag $SourceSha $AssetsDir docs/releases/0.9.3.md
+node tools/github-release.mjs prepare . $ReleaseTag $SourceSha $AssetsDir docs/releases/0.9.4.md
 node tools/github-release.mjs verify . $ReleaseTag $SourceSha '<固定宿主源码根>' '<验收记录路径>/verification.json'
 ```
 
