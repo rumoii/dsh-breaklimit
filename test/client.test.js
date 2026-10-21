@@ -1478,6 +1478,31 @@ test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
   assert.equal(textEn.includes('Runtime behavior: Not verified by this page'), true)
 })
 
+test('阻断与宿主目录说明弹窗：内容、文件清单与关闭文案', () => {
+  const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
+
+  const blocked = exported.blockedHelpDialogSpec([
+    { patchId: 'output.trim', path: 'packages/bundle/web-app/presets/cordis.patch.yml', reason: '已应用的是上一次声明的版本' },
+    { patchId: 'read.limits', path: 'packages/fs/tool-fs/src/read.ts', reason: '内容不匹配' },
+  ])
+  assert.equal(blocked.tone, 'danger', '阻断说明用 error 图标')
+  assert.equal(blocked.title.length > 0, true)
+  const blockedText = textOf(mount(blocked.body))
+  assert.equal(blockedText.includes('output.trim'), true, '应列出被阻断的补丁 id')
+  assert.equal(blockedText.includes('cordis.patch.yml'), true, '应列出被阻断的文件')
+  assert.equal(blockedText.includes('read.ts'), true, '应列出每一条')
+  assert.equal(blockedText.includes('预检发现 2 处不一致'), true, '条数应来自传入的清单')
+  assert.equal(blockedText.includes('不要直接覆盖或重新采集哈希'), true, '应带上警告')
+  assert.equal(typeof blocked.cancelText, 'string', '只读弹窗用关闭文案，不传 yes')
+  assert.equal(blocked.yes, undefined, '不应传 yes')
+
+  const root = exported.configureRootDialogSpec()
+  const rootText = textOf(mount(root.body))
+  assert.equal(rootText.includes('DSH_BREAKLIMIT_HOST_ROOT'), true, '要给出真实的环境变量名')
+  assert.equal(rootText.includes('deepseek-harness'), true, '示例里应带路径占位')
+  assert.equal(typeof root.cancelText, 'string', '只读弹窗用关闭文案')
+})
+
 test('开关与勾选框照宿主 ui-primitives 的尺寸和取色', () => {
   const { exported } = loadClient()
   const { Switch, S, SCOPED_CSS } = exported

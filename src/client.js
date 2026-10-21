@@ -1423,6 +1423,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       blockedNoticeTitle: (n) => `预检发现 ${String(n)} 处不一致`,
       blockedNoticeBody: "宿主源码可能被其他工具修改，或版本不匹配。先看具体原因，确认后再检查。",
       viewBlockReason: "查看具体原因",
+      blockedDialogTitle: "一处源码无法安全应用",
+      blockedDialogIntro: (n) => `预检发现 ${String(n)} 处不一致。宿主源码可能被其他工具修改过，或与绑定的宿主版本不匹配。`,
+      blockedDialogStep1: "核对宿主版本与绑定提交是否一致。",
+      blockedDialogStep2: "检查这些文件的源码差异，以及有没有从前的应用记录。",
+      blockedDialogStep3: "保留你自己的改动，确认来源之后再重新检查。",
+      blockedDialogWarnTitle: "不要直接覆盖或重新采集哈希",
+      blockedDialogWarnBody: "这会隐藏版本差异，之后也无法证明补丁适配是对的。",
+      rootDialogTitle: "配置宿主源码目录",
+      rootDialogBody: "在启动器里传入宿主根目录，然后用同一个 profile 重启。不要用改校验值的方式跳过版本检查。",
+      rootDialogNote: "上面是 PowerShell 示例，把路径换成你自己的。",
       recheckSource: "再次检查源码",
       promptMineSummary: "使用自定义共用正文 · 下一轮对话生效",
       promptBuiltinSummary: "使用内置共用正文 · 下一轮对话生效",
@@ -2186,6 +2196,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       blockedNoticeTitle: (n) => `Preflight found ${String(n)} ${Number(n) === 1 ? "inconsistency" : "inconsistencies"}`,
       blockedNoticeBody: "Host source may have been modified externally or version does not match. Review reasons before rechecking.",
       viewBlockReason: "View blocking reason",
+      blockedDialogTitle: "A source file cannot be applied safely",
+      blockedDialogIntro: (n) => `Preflight found ${String(n)} ${Number(n) === 1 ? "inconsistency" : "inconsistencies"}. Host source may have been modified by another tool, or it does not match the bound host version.`,
+      blockedDialogStep1: "Check that the host version matches the bound commit.",
+      blockedDialogStep2: "Inspect the source diff of these files and any earlier apply record.",
+      blockedDialogStep3: "Keep your own edits, confirm where they came from, then recheck.",
+      blockedDialogWarnTitle: "Do not overwrite or re-capture hashes",
+      blockedDialogWarnBody: "That hides the version difference, and afterwards nothing proves the patch still fits.",
+      rootDialogTitle: "Configure the host source directory",
+      rootDialogBody: "Pass the host root in the launcher, then restart with the same profile. Do not skip the version check by editing the recorded hashes.",
+      rootDialogNote: "That is a PowerShell example; replace the path with yours.",
       recheckSource: "Recheck source",
       promptMineSummary: "Using custom shared prompt - takes effect next turn",
       promptBuiltinSummary: "Using built-in shared prompt - takes effect next turn",
@@ -4783,6 +4803,44 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }
   }
 
+  /**
+   * 预检阻断的原因说明。只读弹窗：不传 yes / run，底部用关闭文案。
+   * blocked 每项带 patchId、path、reason（补丁页的清单文本用的是同样三个字段）。
+   */
+  function blockedHelpDialogSpec(blocked) {
+    const list = Array.isArray(blocked) ? blocked : []
+    return {
+      // Dialog 的 tone 只认 danger（渲染成 error 图标），其余一律按 accent 处理。
+      tone: "danger",
+      title: T.blockedDialogTitle,
+      cancelText: T.dismissShort,
+      body: h("div", { style: S.wordEditorFields },
+        h("p", { style: S.text }, T.blockedDialogIntro(list.length)),
+        h("ul", { className: "bkl-file-list" },
+          list.map((item, index) => h("li", { key: String(index) },
+            h("span", null, `${String(item?.patchId ?? "")} · ${String(item?.path ?? "")}`),
+            h("span", { style: S.caption }, ` — ${String(item?.reason ?? "")}`)))),
+        h("ol", { style: merge(S.text, { margin: 0, paddingLeft: "20px", display: "flex", flexDirection: "column", gap: "6px" }) },
+          h("li", null, T.blockedDialogStep1),
+          h("li", null, T.blockedDialogStep2),
+          h("li", null, T.blockedDialogStep3)),
+        h(Notice, { tone: "warn", title: T.blockedDialogWarnTitle, body: T.blockedDialogWarnBody })),
+    }
+  }
+
+  /** 宿主目录未配置时的说明。同样是只读弹窗。 */
+  function configureRootDialogSpec() {
+    return {
+      tone: "accent",
+      title: T.rootDialogTitle,
+      cancelText: T.dismissShort,
+      body: h("div", { style: S.wordEditorFields },
+        h("p", { style: S.text }, T.rootDialogBody),
+        h("pre", { style: S.codeBlock }, T.nsRootSnippet),
+        h("p", { style: S.small }, T.rootDialogNote)),
+    }
+  }
+
   // ---- 词库页 ---------------------------------------------------------------
   //
   // 列表、搜索、新增/编辑/删除都在这里；本地预览只用已保存的词库，搜索不会改变
@@ -5344,6 +5402,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     // ---- 动作 ----
 
+    // 派发函数要用最新的预检结果，所以 f 定义在动作区之前。
+    const f = derive(status, patchInfo, tierInfo, override, restart)
+
     const runAction = useCallback((action) => {
       if (action === "retry" || action === "refresh") void load()
       else if (action === "goPatches") goTab("patches")
@@ -5355,7 +5416,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       else if (action === "copyRestart") void copyRestart()
       else if (action === "retryAlias") void aliasStore.read()
       else if (action === "recoverRules") askRecoverRules("next")
-    }, [load, goTab, copy, copyRestart])
+      // 补丁页「查看具体原因」与概览页「配置宿主目录」：之前没有分支，点了什么都不发生。
+      else if (action === "blockedHelp") openDialog(blockedHelpDialogSpec(f.blocked))
+      else if (action === "configureRoot") openDialog(configureRootDialogSpec())
+    }, [load, goTab, copy, copyRestart, openDialog, f])
 
     const togglePatch = useCallback(async (id, next) => {
       setToggles(prev => ({ ...prev, [id]: next }))
@@ -5389,8 +5453,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         if (mounted.current) setEnabledPending(false)
       }
     }, [clearNotice, notify, load])
-
-    const f = derive(status, patchInfo, tierInfo, override, restart)
 
     const askApply = () => {
       openDialog({
@@ -6851,6 +6913,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   exports.modeSwitchDialogSpec = modeSwitchDialogSpec
   exports.ruleDeleteDialogSpec = ruleDeleteDialogSpec
   exports.recoverRulesDialogSpec = recoverRulesDialogSpec
+  exports.blockedHelpDialogSpec = blockedHelpDialogSpec
+  exports.configureRootDialogSpec = configureRootDialogSpec
   // 阶段五收官组件导出
   exports.WordsPage = WordsPage
   exports.aliasStore = aliasStore
