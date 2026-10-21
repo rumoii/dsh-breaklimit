@@ -2367,6 +2367,14 @@ test('阶段五收官：会话浮窗微窗口（dockPanel）外观、标题栏�
   assert.equal(panelKids.some(kid => kid.props?.className === 'dock-footer'), true, '页脚必须是 panel 直接子项（移出滚动区）')
   const pressedButtons = findAll(panel, n => n.type === 'button' && n.props?.['aria-pressed'] !== undefined)
   assert.equal(pressedButtons.length, 2, '模式卡应仍是两个 aria-pressed 按钮')
+
+  // 6. P3 复审收尾：浮窗 hover 作用域与紧凑卡差异说明
+  assert.equal(panel.props.className, 'bkl-dock', '浮窗根节点应带 bkl-dock，hover 规则以它为作用域')
+  assert.equal(findAll(panel, n => n.props?.className === 'dock-close').length, 1, '关闭钮应带 dock-close')
+  assert.equal(findAll(panel, n => n.props?.className === 'dock-mode-card').length, 2, '两张模式卡应带 dock-mode-card')
+  assert.equal(findAll(panel, n => n.props?.className === 'dock-alias-del').length, 3, '前 3 条词条应各带 dock-alias-del')
+  assert.equal(panelAllText.includes('保留附加约束'), true, '推荐卡第二行应是差异说明而不是模式名')
+  assert.equal(panelAllText.includes('完全解放 · 上限更高'), true, '完全解放卡第二行应说明上限更高')
 })
 
 

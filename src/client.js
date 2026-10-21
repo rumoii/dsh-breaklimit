@@ -697,6 +697,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .editor-card.dirty .bkl-card-head { box-shadow: inset 3px 0 0 var(--dsw-alias-state-warn-primary); background: var(--dsw-alias-state-warn-tertiary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)); }",
   ].join("\n")
 
+  // 浮窗是第二个挂载点，`.bkl-root` 前缀的样式到不了这里；它自己的 hover 规则
+  // 单独注入一张表，只在浮窗挂载时生效。内联样式优先于样式表，所以带 !important。
+  const DOCK_STYLE_ID = "bkl-dock-style"
+  const DOCK_CSS = [
+    ".bkl-dock .dock-close:hover { background: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)) !important; color: var(--dsw-alias-label-primary) !important; }",
+    ".bkl-dock .dock-mode-card:hover:not([aria-pressed=\"true\"]):not([aria-disabled=\"true\"]) { border-color: var(--dsw-alias-border-l4) !important; }",
+    ".bkl-dock .dock-alias-del:hover:not([disabled]) { color: var(--dsw-alias-state-error-primary) !important; }",
+  ].join("\n")
+
   const TEXT = {
     zh: {
       nav: "破限",
@@ -938,6 +947,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       modeUnrestricted: "完全解放（彻底破限）",
       modeRecommendedShort: "推荐模式",
       modeUnrestrictedShort: "完全解放模式",
+      modeRecCompact: "保留附加约束",
+      modeUnrCompact: "完全解放 · 上限更高",
       tagDefault: "默认（提示词）",
       tagCurrent: "正在使用",
       tagPending: "待确认",
@@ -1698,6 +1709,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       modeUnrestricted: "Unrestricted (full jailbreak)",
       modeRecommendedShort: "Recommended",
       modeUnrestrictedShort: "Unrestricted",
+      modeRecCompact: "Keeps extra constraints",
+      modeUnrCompact: "Unrestricted · higher limits",
       tagDefault: "default (prompt)",
       tagCurrent: "in use",
       tagPending: "to confirm",
@@ -6308,6 +6321,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     useEffect(() => aliasStore.subscribe(() => { if (aliveRef.current) bumpDock(value => value + 1) }), [])
 
+    // 浮窗专属样式：关闭钮、模式卡与词条删除的 hover。整页只注入一次。
+    useEffect(() => {
+      if (typeof document === "undefined" || !document.head || document.getElementById(DOCK_STYLE_ID)) return
+      const element = document.createElement("style")
+      element.id = DOCK_STYLE_ID
+      element.textContent = DOCK_CSS
+      document.head.appendChild(element)
+    }, [])
+
     useEffect(() => {
       if (open) {
         void load()
@@ -6512,6 +6534,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         ? h("div", {
             ref: panelRef,
             role: "dialog",
+            className: "bkl-dock",
             "aria-label": T.dockPopoverTitle,
             style: merge(ALIAS.panel, {
               left: `${dockRect.x}px`,
@@ -6541,6 +6564,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               h("span", { style: { flex: 1, minWidth: 0 } }),
               h("button", {
                 type: "button",
+                className: "dock-close",
                 style: ALIAS.close,
                 "aria-label": T.aliasClose,
                 onClick: () => { setOpen(false); setPendingTier(null) },
@@ -6553,6 +6577,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             h("div", { style: ALIAS.modeGrid },
               h("button", {
                 type: "button",
+                className: "dock-mode-card",
                 style: tier === "recommended" ? merge(ALIAS.modeCard, ALIAS.modeCardOn) : ALIAS.modeCard,
                 // 用 aria-disabled 而不是 disabled：项目里所有按钮都保留键盘焦点，
                 // 真正挡住重复点击的是 switchTier 里的 tierBusy 判断。
@@ -6561,16 +6586,17 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 onClick: () => { requestTier("recommended") },
               },
                 h("strong", { style: ALIAS.modeCardTitle }, T.modeRecommended),
-                h("span", { style: ALIAS.modeCardSub }, T.modeRecommendedShort)),
+                h("span", { style: ALIAS.modeCardSub }, T.modeRecCompact)),
               h("button", {
                 type: "button",
+                className: "dock-mode-card",
                 style: tier === "unrestricted" ? merge(ALIAS.modeCard, ALIAS.modeCardOn) : ALIAS.modeCard,
                 "aria-disabled": tierBusy ? "true" : undefined,
                 "aria-pressed": tier === "unrestricted" ? "true" : "false",
                 onClick: () => { requestTier("unrestricted") },
               },
                 h("strong", { style: ALIAS.modeCardTitle }, T.modeUnrestricted),
-                h("span", { style: ALIAS.modeCardSub }, T.modeUnrestrictedShort))),
+                h("span", { style: ALIAS.modeCardSub }, T.modeUnrCompact))),
             h("p", { style: ALIAS.desc }, T.dockModeHint),
             pendingTier !== null
               ? h("div", { style: ALIAS.warnBox },
@@ -6604,6 +6630,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                     ` ${entry.to}`),
                   h("button", {
                     type: "button",
+                    className: "dock-alias-del",
                     style: deletingIndex === index ? merge(ALIAS.remove, { color: tk.error, fontWeight: 600 }) : ALIAS.remove,
                     title: deletingIndex === index ? T.confirmDeleteAlias(entry.from) : undefined,
                     onClick: () => { removeAt(index) },
