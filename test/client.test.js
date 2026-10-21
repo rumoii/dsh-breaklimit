@@ -232,7 +232,9 @@ test('正文读取失败时不显示空正文或内置正文，也不许覆盖',
   resetButton.props.onClick({ preventDefault() {} })
   assert.equal(saved, 0)
   assert.equal(reset, 0)
-  // 读取失败横幅带「重新读取」动作，而不是给一个空编辑器让人保存。
+  // 读取失败用 StateBlock(error) 承载，横幅带「重新读取」动作，而不是给一个空编辑器让人保存。
+  const stateError = findAll(tree, n => n.props?.className && String(n.props.className).includes('bkl-state-error'))[0]
+  assert.equal(Boolean(stateError), true, '读取失败应渲染 bkl-state-error 状态块')
   const retry = buttons.find(button => textOf(button).includes('Read the prompt again'))
   assert.equal(retry !== undefined, true)
 })
@@ -857,6 +859,249 @@ test('增强版 Dialog：consequence 风险分级与后果提示行正确渲染'
   assert.equal(textOf(pDanger[0]).includes('此操作无法撤销'), true)
 })
 
+test('P1 设计系统：Tag 色阶徽章前置圆点，无 tone 不带点', () => {
+  const { exported } = loadClient()
+
+  const plain = mount(exported.Tag({ tone: undefined, children: '普通' }))
+  const plainSpans = findAll(plain, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true')
+  assert.equal(plainSpans.length, 0, '无 tone 的 Tag 不应渲染前置圆点')
+  assert.equal(textOf(plain).includes('普通'), true, '无 tone 的 Tag 应渲染文案')
+
+  const toned = mount(exported.Tag({ tone: 'ok', children: '已就位' }))
+  assert.equal(textOf(toned).includes('已就位'), true, '带 tone 的 Tag 应渲染文案')
+  const dots = findAll(toned, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true')
+  assert.equal(dots.length, 1, '带 tone 的 Tag 应渲染一个前置圆点')
+  assert.equal(dots[0].props.style.background, 'currentColor', '圆点应取 currentColor')
+})
+
+test('P1 设计系统：Button link 与 icon 形态渲染与禁用拦截', () => {
+  const { exported } = loadClient()
+
+  const link = mount(exported.Button({ kind: 'link', onClick: () => {}, children: '调整' }))
+  assert.equal(String(link.props.className).includes('bkl-btn-link'), true, 'link 形态应带 bkl-btn-link 类')
+  assert.equal(textOf(link).includes('调整'), true, 'link 应渲染文案')
+  assert.equal(typeof link.props.style.color, 'string', 'link 着色应为字符串')
+  assert.equal(link.props.style.color.includes('var(--dsw-'), true, 'link 应取宿主令牌着色')
+
+  const icon = mount(exported.Button({ kind: 'icon', label: '关闭', onClick: () => {}, children: '×' }))
+  assert.equal(String(icon.props.className).includes('bkl-btn-icon'), true, 'icon 形态应带 bkl-btn-icon 类')
+  assert.equal(icon.props['aria-label'], '关闭', 'icon 钮应携带 aria-label')
+  assert.equal(textOf(icon).includes('×'), true, 'icon 钮应渲染内容')
+
+  const iconSmall = mount(exported.Button({ kind: 'icon', size: 'small', label: '关闭', onClick: () => {}, children: '×' }))
+  assert.equal(iconSmall.props.style.minHeight !== '26px', true, 'icon 形态不应套用 small 的 26px 最小高度')
+
+  let clicked = 0
+  const off = mount(exported.Button({ kind: 'link', off: true, onClick: () => { clicked += 1 }, children: '不可点' }))
+  assert.equal(off.props['aria-disabled'], 'true', '禁用 link 应置 aria-disabled')
+  off.props.onClick({ preventDefault() {} })
+  assert.equal(clicked, 0, '禁用 link 的 onClick 不应触发')
+})
+
+test('P1 设计系统：Dialog 头部圆角图标块与 success 成功说明块', () => {
+  const { exported } = loadClient()
+
+  const dangerTree = exported.Dialog({ open: true, title: '删除规则', tone: 'danger', success: { title: '可以撤销', text: '之后可重新应用。' } })
+  const dangerNodes = mount(dangerTree)
+  const iconBlocks = findAll(dangerNodes, n => n.props?.style && n.props.style.background !== undefined && n.props['aria-hidden'] === 'true' && typeof n.props.style.width === 'string' && n.props.style.width === '32px')
+  assert.equal(iconBlocks.length >= 1, true, '弹窗头部应渲染 32px 圆角图标块')
+
+  // 图标映射：danger 用 alert + 错误底色，默认 tone 用 shield + 强调底色，两块必须可区分。
+  const defaultTree = exported.Dialog({ open: true, title: '提示' })
+  const defaultNodes = mount(defaultTree)
+  const defaultIconBlocks = findAll(defaultNodes, n => n.props?.style && n.props.style.background !== undefined && n.props['aria-hidden'] === 'true' && typeof n.props.style.width === 'string' && n.props.style.width === '32px')
+  assert.equal(defaultIconBlocks.length >= 1, true, '默认 tone 也应渲染 32px 图标块')
+  assert.notEqual(iconBlocks[0].props.style.background, defaultIconBlocks[0].props.style.background, 'danger 与默认 tone 的图标块底色应不同')
+  const dangerD = findAll(iconBlocks[0], n => n.type === 'path')[0]?.props?.d
+  const defaultD = findAll(defaultIconBlocks[0], n => n.type === 'path')[0]?.props?.d
+  assert.equal(typeof dangerD === 'string' && typeof defaultD === 'string', true, '两块图标都应带 svg path')
+  assert.notEqual(dangerD, defaultD, 'danger 与默认 tone 的图标 path 应不同（alert vs shield）')
+
+  const success = findAll(dangerNodes, n => typeof n.props?.className === 'string' && n.props.className.includes('bkl-success-sign'))
+  assert.equal(success.length, 1, '应渲染 success 成功说明块')
+  assert.equal(textOf(success[0]).includes('可以撤销'), true)
+  assert.equal(textOf(success[0]).includes('之后可重新应用。'), true)
+
+  const plainTree = exported.Dialog({ open: true, title: '提示' })
+  const plainNodes = mount(plainTree)
+  const plainSuccess = findAll(plainNodes, n => typeof n.props?.className === 'string' && n.props.className.includes('bkl-success-sign'))
+  assert.equal(plainSuccess.length, 0, '未传 success 时不应渲染成功说明块')
+})
+
+test('P1 设计系统：Toast 视觉层不带 live region，Announcer 常驻播报独立承载', () => {
+  const { exported } = loadClient()
+
+  const toastTree = mount(exported.Toast({ text: '已复制到剪贴板' }))
+  const toast = findAll(toastTree, n => n.props?.['data-bkl-toast'] === 'true')[0]
+  assert.equal(Boolean(toast), true, '视觉 toast 应带 data-bkl-toast 标记')
+  assert.equal(toast.props['aria-hidden'], 'true', '视觉 toast 应 aria-hidden')
+  assert.equal(toast.props.role, undefined, '视觉 toast 不应带 role')
+  assert.equal(toast.props['aria-live'], undefined, '视觉 toast 不应带 aria-live')
+  assert.equal(textOf(toast).includes('已复制到剪贴板'), true, '视觉 toast 应渲染文案')
+
+  const annTree = mount(exported.Announcer({ text: '已复制到剪贴板' }))
+  const ann = findAll(annTree, n => n.props?.['data-bkl-toast-announcer'] === 'true')[0]
+  assert.equal(Boolean(ann), true, 'Announcer 应带 data-bkl-toast-announcer 标记')
+  assert.equal(ann.props.role, 'status', 'Announcer 应为 role=status')
+  assert.equal(ann.props['aria-live'], 'polite')
+  assert.equal(textOf(ann).includes('已复制到剪贴板'), true, 'Announcer 应渲染播报文案')
+})
+
+// Section 行为测试用的桩：可写 state、可捕获 cleanup、假计时器。
+// hooks[1] 的注入依赖位置假设：status 必须是 Section 第 2 个 useState（0 基下标 1）。
+// 注入 fakeStatus 后概览页才渲染 OverviewPage。其余常用槽位（useState 调用序）：
+// override=5、draft=16、ruleEdit=18；用 options.hooks 按下标覆盖。
+function loadSectionHarness(writeTextImpl, options = {}) {
+  let registration
+  const hooks = []
+  const cleanups = []
+  const timerLog = []
+  const timers = new Map()
+  let nextTimerId = 1
+  let hookIndex = 0
+  const fakeStatus = {
+    hostRoot: '/test-host',
+    target: { version: '0.9.0', commit: 'abc1234' },
+    mode: 'danger-full-access',
+    preflight: { ok: true, code: 'ok', blocked: [] },
+    inject: { ok: true },
+    ...options.status,
+  }
+  if (options.status?.preflight) fakeStatus.preflight = { ok: true, code: 'ok', blocked: [], ...options.status.preflight }
+  hooks[1] = { value: fakeStatus }
+  if (options.hooks) for (const [index, value] of Object.entries(options.hooks)) hooks[Number(index)] = { value }
+  const react = {
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+    useState: (initial) => {
+      const i = hookIndex++
+      if (hooks[i] === undefined) hooks[i] = { value: initial }
+      const slot = hooks[i]
+      return [slot.value, (next) => { slot.value = typeof next === 'function' ? next(slot.value) : next }]
+    },
+    useEffect: (fn) => {
+      const cleanup = fn()
+      if (typeof cleanup === 'function') cleanups.push(cleanup)
+    },
+    useCallback: (fn) => fn,
+    useRef: (current) => {
+      const i = hookIndex++
+      if (hooks[i] === undefined) hooks[i] = { value: { current } }
+      return hooks[i].value
+    },
+  }
+  const sandbox = {
+    window: { __ModuleLoader__: { load(value) { registration = value } } },
+    document: { head: null, documentElement: { lang: 'zh-CN' }, getElementById() { return null } },
+    navigator: { language: 'zh-CN', clipboard: { writeText: writeTextImpl } },
+    // load() 里的 fetch 永不落定，避免桩环境下产生无关的失败路径与计时器。
+    fetch: () => new Promise(() => {}),
+    setTimeout: (fn, ms) => {
+      const id = nextTimerId++
+      timers.set(id, fn)
+      timerLog.push({ kind: 'set', id, ms })
+      return id
+    },
+    clearTimeout: (id) => {
+      timers.delete(id)
+      timerLog.push({ kind: 'clear', id })
+    },
+    setInterval: () => 0,
+    clearInterval: () => {},
+  }
+  vm.runInNewContext(fs.readFileSync(CLIENT, 'utf8'), sandbox)
+  const exported = registration.factory(() => react)
+  let component
+  exported.apply({
+    effect(fn) { fn() },
+    slots: {
+      inject(_name, fn) { fn() },
+      register(metadata, value) {
+        if (metadata?.name === 'settings.section') component = value
+      },
+    },
+  })
+  return {
+    exported,
+    timerLog,
+    cleanups,
+    render: (props) => {
+      hookIndex = 0
+      return component(props)
+    },
+  }
+}
+
+const flushMicrotasks = () => new Promise(resolve => setImmediate(resolve))
+
+test('P1 Toast 行为：常驻播报、复制成功 4200ms 计时、替换与卸载清理', async () => {
+  const harness = loadSectionHarness(async () => {})
+  const { exported } = harness
+
+  // 1. 初始渲染：announcer 常驻且唯一、文本为空；无视觉 toast
+  const tree1 = harness.render()
+  const anns1 = findAll(tree1, n => n.type === exported.Announcer)
+  assert.equal(anns1.length, 1, 'announcer 应常驻且仅有 1 个')
+  assert.equal(anns1[0].props.text, '', '初始播报文本应为空')
+  assert.equal(findAll(tree1, n => n.type === exported.Toast).length, 0, '初始不应渲染视觉 toast')
+
+  const onCopyNode = findAll(tree1, n => typeof n.type === 'function' && typeof n.props?.onCopy === 'function')[0]
+  assert.equal(Boolean(onCopyNode), true, '应从 Section 树取到 OverviewPage 的 onCopy')
+
+  // 2. 复制成功：announcer 与视觉 toast 同文，setTimeout 以 4200ms 注册一次
+  onCopyNode.props.onCopy('诊断文本')
+  await flushMicrotasks()
+
+  const tree2 = harness.render()
+  const ann2 = findAll(tree2, n => n.type === exported.Announcer)[0]
+  const toasts2 = findAll(tree2, n => n.type === exported.Toast)
+  assert.equal(toasts2.length, 1, '复制成功后应渲染视觉 toast')
+  assert.equal(ann2.props.text.length > 0, true, '播报文本应变为非空')
+  assert.equal(ann2.props.text, toasts2[0].props.text, '播报文本应与 toast 文本一致')
+  const sets1 = harness.timerLog.filter(e => e.kind === 'set')
+  assert.equal(sets1.length, 1, 'setTimeout 应注册一次')
+  assert.equal(sets1[0].ms, 4200, 'setTimeout 应以 4200ms 注册')
+
+  // 3. 再复制一次：先 clearTimeout 上一个 id，再注册新 id
+  onCopyNode.props.onCopy('第二份诊断')
+  await flushMicrotasks()
+  const log = harness.timerLog.map(e => e.kind)
+  assert.deepEqual(log, ['set', 'clear', 'set'], '再复制应先清旧计时器再注册新计时器')
+  assert.equal(harness.timerLog[1].id, harness.timerLog[0].id, 'clear 的应是上一个计时器 id')
+  assert.notEqual(harness.timerLog[2].id, harness.timerLog[0].id, '新计时器应是新的 id')
+  assert.equal(harness.timerLog[2].ms, 4200, '新计时器仍应是 4200ms')
+
+  // 4. 卸载清理：遍历调用所有 useEffect 桩捕获的 cleanup，最后一个 toast 计时器被清掉
+  assert.equal(harness.cleanups.length > 0, true, 'useEffect 桩应捕获到 cleanup')
+  for (const cleanup of harness.cleanups) cleanup()
+  const lastSet = harness.timerLog.filter(e => e.kind === 'set').at(-1)
+  assert.equal(
+    harness.timerLog.some(e => e.kind === 'clear' && e.id === lastSet.id),
+    true,
+    '卸载 cleanup 应 clearTimeout 最后一个 toast 计时器',
+  )
+})
+
+test('P1 Toast 行为：复制失败仍走 Notice，不产生 toast 与计时器', async () => {
+  const harness = loadSectionHarness(async () => { throw new Error('clipboard denied') })
+  const { exported } = harness
+
+  const tree1 = harness.render()
+  const onCopyNode = findAll(tree1, n => typeof n.type === 'function' && typeof n.props?.onCopy === 'function')[0]
+  onCopyNode.props.onCopy('诊断文本')
+  await flushMicrotasks()
+
+  const tree2 = harness.render()
+  assert.equal(findAll(tree2, n => n.type === exported.Toast).length, 0, '复制失败不应渲染 toast')
+  assert.equal(findAll(tree2, n => n.type === exported.Announcer)[0].props.text, '', '复制失败播报应保持为空')
+
+  const overviewNode = findAll(tree2, n => n.type === exported.OverviewPage)[0]
+  assert.equal(Boolean(overviewNode?.props?.overviewNotice), true, '复制失败后 overviewNotice 应出现')
+  const noticeTree = mount(exported.OverviewPage(overviewNode.props))
+  const notices = findAll(noticeTree, n => String(n.props?.className ?? '').split(' ').includes('bkl-notice'))
+  assert.equal(notices.length >= 1, true, '概览树里应出现 notice 节点')
+  assert.equal(harness.timerLog.filter(e => e.kind === 'set' && e.ms === 4200).length, 0, '失败路径不应注册 4200ms 计时器')
+})
+
 test('StateBlock 状态块：统一承载 empty/error/loading/warn 四档布局与数据保护行', () => {
   const { exported } = loadClient()
 
@@ -1233,7 +1478,7 @@ test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
   assert.equal(textEn.includes('Runtime behavior: Not verified by this page'), true)
 })
 
-test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置清单与技术诊断脱敏折叠', () => {
+test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、columns 双栏配置清单与技术诊断脱敏折叠', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { OverviewPage } = exported
   assert.equal(typeof OverviewPage, 'function', 'OverviewPage 必须被导出')
@@ -1243,6 +1488,7 @@ test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置
   let navigatedTab = null
   let copiedText = null
   let guideToggled = false
+  let helpOpened = 0
 
   const fakeStatus = {
     hostRoot: 'C:\\Users\\rumo\\dsh-host',
@@ -1263,8 +1509,10 @@ test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置
     enabledCount: 2,
     pendingFiles: 1,
     total: 5,
-    applied: { files: 2, updatedAt: Date.now() },
+    // applied 为 null：Guide step3 未完成（当前步落第 3 步），flow 第 3 阶段仍是 current。
+    applied: null,
     preCode: 'ok',
+    restartPending: false,
   }
   const fakeWords = {
     phase: 'ready',
@@ -1272,7 +1520,7 @@ test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置
     entries: [{ from: '原词', to: '替换词' }],
   }
 
-  const vdom = OverviewPage({
+  const renderPage = (guideOpen, words = fakeWords) => OverviewPage({
     f: fakeF,
     status: fakeStatus,
     override: null,
@@ -1281,18 +1529,20 @@ test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置
     restart: null,
     restartView: null,
     step: { tone: 'ok', title: '完成' },
-    words: fakeWords,
-    guideOpen: true,
+    words,
+    loadedAt: Date.now(),
+    guideOpen,
     onToggleGuide() { guideToggled = true },
     onRun(action) { actionRan = action },
     onGo(tab) { navigatedTab = tab },
     onToggleEnabled(next) { toggledEnabled = next },
     onCopy(text) { copiedText = text },
+    onOpenHelp() { helpOpened += 1 },
     nextNotice: null,
     overviewNotice: null,
   })
 
-  const tree = mount(vdom)
+  const tree = mount(renderPage(true))
 
   // 1. 验证 4 阶段进度条（ol.bkl-flow）
   const flowNode = findAll(tree, n => n.type === 'ol' && n.props?.className === 'bkl-flow')[0]
@@ -1304,45 +1554,113 @@ test('重塑 OverviewPage：4阶段进度流、双栏卡片网格、核心配置
   assert.equal(flowItems[2].props.className, 'current')
   assert.equal(flowItems[3].props.className, 'todo')
 
-  // 2. 验证通栏 Hero 主行动卡片（section.bkl-hero-card）
-  const heroCard = findAll(tree, n => n.type === 'section' && String(n.props?.className).includes('bkl-hero-card'))[0]
-  assert.equal(Boolean(heroCard), true, '应渲染通栏 Hero 主行动卡片 bkl-hero-card')
-  const actionBtn = findAll(heroCard, n => n.type === 'button')[0]
+  // 2. 验证主行动卡（section.bkl-action-card 纵向：eyebrow 图标圆 + h2 + 段落 + 按钮行）
+  const actionCardNode = findAll(tree, n => n.type === 'section' && String(n.props?.className).includes('bkl-action-card'))[0]
+  assert.equal(Boolean(actionCardNode), true, '应渲染主行动卡 bkl-action-card')
+  const eyebrow = findAll(actionCardNode, n => n.props?.className === 'bkl-action-eyebrow')[0]
+  assert.equal(Boolean(eyebrow), true, '行动卡应有 bkl-action-eyebrow')
+  assert.equal(findAll(eyebrow, n => n.props?.className === 'bkl-icon-wrap').length, 1, 'eyebrow 内应有图标圆 bkl-icon-wrap')
+  const actionTitle = findAll(actionCardNode, n => n.type === 'h2' && n.props?.id === 'bkl-action-title')[0]
+  assert.equal(Boolean(actionTitle), true, '行动卡应有 h2#bkl-action-title')
+  const actionActions = findAll(actionCardNode, n => n.props?.className === 'bkl-action-actions')[0]
+  assert.equal(Boolean(actionActions), true, '行动卡应有按钮行 bkl-action-actions')
+  const actionBtn = findAll(actionActions, n => n.type === 'button')[0]
   actionBtn.props.onClick({ preventDefault() {} })
   assert.equal(actionRan, 'goPatches', '点击主行动卡片按钮应触发 action')
 
-  // 3. 验证 1:1 双栏平衡网格（div.bkl-balanced-grid）
-  const gridNode = findAll(tree, n => n.props?.className === 'bkl-balanced-grid')[0]
-  assert.equal(Boolean(gridNode), true, '应渲染双栏平衡网格 bkl-balanced-grid')
+  // 3. 验证 bkl-columns 双栏
+  const columnsNode = findAll(tree, n => n.props?.className === 'bkl-columns')[0]
+  assert.equal(Boolean(columnsNode), true, '应渲染双栏网格 bkl-columns')
+  assert.equal(findAll(tree, n => String(n.props?.className ?? '').includes('bkl-balanced-grid')).length, 0, '不应再有 bkl-balanced-grid')
+  assert.equal(findAll(tree, n => String(n.props?.className ?? '').includes('bkl-hero-card')).length, 0, '不应再有 bkl-hero-card')
 
-  // 4. 验证核心配置清单（div.bkl-summary-list，Switch 就地切换）
-  const summaryList = findAll(gridNode, n => n.props?.className === 'bkl-summary-list')[0]
+  // 4. 验证 Guide 三步引导（展开态）：进度、三步、当前步、收起链接
+  const guideNode = findAll(tree, n => n.props?.className === 'bkl-guide')[0]
+  assert.equal(Boolean(guideNode), true, '展开态应渲染 bkl-guide')
+  const guideItems = findAll(guideNode, n => String(n.props?.className ?? '').includes('bkl-guide-item'))
+  assert.equal(guideItems.length, 3, 'Guide 应有 3 个步骤行')
+  assert.equal(textOf(guideNode).includes('已完成 2 / 3'), true, '进度文本应显示已完成 n / 3')
+  const currentItems = findAll(guideNode, n => n.props?.className === 'bkl-guide-item is-current')
+  assert.equal(currentItems.length, 1, '应有且仅有一个当前步 is-current')
+  assert.equal(textOf(currentItems[0]).includes('应用，并重启宿主'), true, '当前步应是第一个未完成项（第 3 步）')
+  assert.equal(textOf(guideItems[0]).includes('已有默认值'), true, 'step1 标题应带默认值后缀')
+  const doneNums = findAll(guideNode, n => n.props?.className === 'bkl-step-num done')
+  assert.equal(doneNums.length, 2, '已完成的两步序号块应为 done')
+  const guideButtons = findAll(guideNode, n => n.type === 'button')
+  const collapseLink = guideButtons.find(b => textOf(b).includes('收起步骤'))
+  assert.equal(Boolean(collapseLink), true, '应有收起链接（guideHide）')
+  const goLink = guideButtons.find(b => textOf(b).includes('去完成'))
+  assert.equal(Boolean(goLink), true, '当前步链接文案应为「去完成」')
+  goLink.props.onClick({ preventDefault() {} })
+  assert.equal(navigatedTab, 'patches', '第 3 步链接应跳转 patches')
+  const step1Link = findAll(guideItems[0], n => n.type === 'button')[0]
+  step1Link.props.onClick({ preventDefault() {} })
+  assert.equal(navigatedTab, 'prompt', 'step1 链接应跳转 prompt')
+  // 步骤链接的可访问名称带上步骤标题，读屏列表里可区分
+  const stepLinkLabels = guideItems.map(item => String(findAll(item, n => n.type === 'button')[0]?.props?.['aria-label'] ?? ''))
+  const stepTitles = ['选择提示词模式', '选择需要的补丁', '应用，并重启宿主']
+  stepLinkLabels.forEach((label, stepIndex) => {
+    assert.equal(label.includes(stepTitles[stepIndex]), true, `步骤 ${String(stepIndex + 1)} 链接的可访问名称应含步骤标题（实际：${label}）`)
+    assert.equal(label.includes('查看') || label.includes('去完成'), true, `步骤 ${String(stepIndex + 1)} 链接的可访问名称应含动作词`)
+  })
+  collapseLink.props.onClick({ preventDefault() {} })
+  assert.equal(guideToggled, true, '收起链接应触发 onToggleGuide')
+
+  // 5. 关闭态：只留 guideShow link
+  const closedTree = mount(renderPage(false))
+  assert.equal(findAll(closedTree, n => n.props?.className === 'bkl-guide').length, 0, '关闭态不应渲染 bkl-guide')
+  const showLink = findAll(closedTree, n => n.type === 'button' && textOf(n).includes('展开步骤'))[0]
+  assert.equal(Boolean(showLink), true, '关闭态应显示 guideShow link')
+  showLink.props.onClick({ preventDefault() {} })
+  assert.equal(guideToggled, true, '展开链接应触发 onToggleGuide')
+
+  // 6. 验证核心配置清单（div.bkl-summary-list，尾钮 link + chevron，接管行 Switch）
+  const summaryList = findAll(columnsNode, n => n.props?.className === 'bkl-summary-list')[0]
   assert.equal(Boolean(summaryList), true, '应渲染核心配置清单 bkl-summary-list')
   const summaryRows = findAll(summaryList, n => n.props?.className === 'bkl-summary-row')
   assert.equal(summaryRows.length, 4, '配置清单应包含 4 行')
+  const summaryLinks = findAll(summaryList, n => n.type === 'button' && String(n.props?.className ?? '').includes('bkl-btn-link'))
+  assert.equal(summaryLinks.length, 3, '前 3 行尾钮应为 bkl-btn-link')
+  for (const link of summaryLinks) {
+    assert.equal(findAll(link, n => n.type === 'path').length >= 1, true, 'link 尾钮应带 chevron 图标')
+  }
 
   const takeoverSwitch = findAll(summaryList, n => n.type === 'button' && n.props?.role === 'switch')[0]
   assert.equal(Boolean(takeoverSwitch), true, '应渲染破限接管开关')
   takeoverSwitch.props.onClick({ preventDefault() {} })
   assert.equal(toggledEnabled, false, '点击开关应就地切换')
 
-  // 5. 验证右栏环境与权限卡片（div.bkl-status-lines）
-  const statusLines = findAll(gridNode, n => n.props?.className === 'bkl-status-lines')[0]
+  // 7. 验证右栏环境与权限卡片（div.bkl-status-lines）与 status-footer 检查时间
+  const statusLines = findAll(columnsNode, n => n.props?.className === 'bkl-status-lines')[0]
   assert.equal(Boolean(statusLines), true, '右栏应渲染环境权限行 bkl-status-lines')
+  const envCard = findAll(columnsNode, n => n.type === 'section' && textOf(n).includes('环境与权限'))[0]
+  assert.equal(Boolean(envCard), true, '应渲染环境与权限卡')
+  assert.equal(textOf(envCard).includes('检查于'), true, '环境卡尾部应有检查时间 status-footer')
 
-  // 6. 验证生效时机指南卡片
-  const effectCard = findAll(gridNode, n => n.type === 'section')
-    .find(c => textOf(c).includes('改动生效时机') || textOf(c).includes('改动什么时候生效？'))
-  assert.equal(Boolean(effectCard), true, '应渲染生效时机指南卡片')
+  // 8. 验证 help-box（生效时机四条 + 「查看使用说明」链接触发 onOpenHelp）
+  const helpBox = findAll(columnsNode, n => n.props?.style && n.type === 'div' && textOf(n).includes('改动什么时候生效？'))[0]
+  assert.equal(Boolean(helpBox), true, '应渲染 help-box（改动什么时候生效）')
+  assert.equal(textOf(helpBox).includes('应用后重启宿主'), true, 'help-box 应含生效时机四条')
+  const helpLink = findAll(helpBox, n => n.type === 'button' && textOf(n).includes('查看使用说明'))[0]
+  assert.equal(Boolean(helpLink), true, 'help-box 应有「查看使用说明」链接')
+  helpLink.props.onClick({ preventDefault() {} })
+  assert.equal(helpOpened, 1, '点击帮助链接应触发 onOpenHelp')
 
-  // 7. 验证技术诊断折叠块（details.bkl-disclosure、一键复制按钮与提示）
-  const disclosure = findAll(gridNode, n => n.type === 'details' && n.props?.className === 'bkl-disclosure')[0]
+  // 9. 验证技术诊断折叠块（details.bkl-disclosure、一键复制按钮与提示）
+  const disclosure = findAll(columnsNode, n => n.type === 'details' && n.props?.className === 'bkl-disclosure')[0]
   assert.equal(Boolean(disclosure), true, '应渲染技术诊断折叠块')
   assert.equal(textOf(disclosure).includes('含本机路径，不含凭据'), true, '应展示不含凭据提示')
   const copyBtn = findAll(disclosure, n => n.type === 'button').find(b => textOf(b).includes('复制诊断信息'))
   assert.equal(Boolean(copyBtn), true, '应渲染复制诊断信息按钮')
   copyBtn.props.onClick({ preventDefault() {} })
   assert.equal(typeof copiedText === 'string' && copiedText.includes('宿主根: …/dsh-host'), true, '点击应触发一键复制脱敏文本')
+
+  // 10. 词库 loading：配置卡显示「词表读取中…」，不误报「读取失败」
+  const loadingTree = mount(renderPage(true, { phase: 'loading', entries: [], stale: false }))
+  const loadingConfig = findAll(loadingTree, n => n.props?.className === 'bkl-summary-list')[0]
+  assert.equal(Boolean(loadingConfig), true, 'loading 期配置卡应渲染')
+  assert.equal(textOf(loadingConfig).includes('词表读取中…'), true, 'loading 期配置卡应显示「词表读取中…」')
+  assert.equal(textOf(loadingConfig).includes('读取失败'), false, 'loading 期配置卡不得误报「读取失败」')
 })
 
 test('重塑 PatchesPage：已选数量徽章、阻断/未配目录 Notice、分界标题、补丁列表高光/胶囊/模式门禁与悬浮底部栏', () => {
@@ -1488,6 +1806,12 @@ test('阶段四：两档模式权衡卡片（mode-grid）要点与预算渲染�
   unrCard.props.onClick?.({ preventDefault() {} })
   assert.equal(pickedMode, 'unrestricted', '点击卡片应触发 onPick')
 
+  // 图标名：原始树上断言 props.name（mount 展开 Icon 后 name 就没了）。
+  // 不得再出现 Icon name="zap"（会静默回落 info），非推荐卡应为 bolt。
+  const rawTree = exported.ModeBlock({ mode: 'recommended', onPick() {} })
+  assert.equal(findAll(rawTree, n => n.props?.name === 'zap').length, 0, '模式卡不得引用已移除的 zap 图标名')
+  assert.equal(findAll(rawTree, n => n.props?.name === 'bolt').length > 0, true, '非推荐模式卡应使用 bolt 图标')
+
   // 2. 验证切换时的横向对比表（.compare）结构与参数对比
   assert.equal(typeof exported.ModeCompare, 'function', 'ModeCompare 必须被导出')
   const compareTree = mount(exported.ModeCompare({
@@ -1528,6 +1852,9 @@ test('阶段四：Prompt 编辑器脏状态（dirty）高亮、字数/字节数�
 
   const cleanCard = findAll(cleanTree, n => n.props?.className && String(n.props.className).includes('editor-card'))[0] || cleanTree
   assert.equal(String(cleanCard.props?.className || '').includes('dirty'), false, '未修改时编辑器卡片不应有 .dirty 类名')
+  const cleanSavedMark = findAll(cleanTree, n => n.props?.className === 'bkl-saved-mark')[0]
+  assert.equal(Boolean(cleanSavedMark), true, '已加载且未修改时底部操作行应显示 saved-mark')
+  assert.equal(textOf(cleanSavedMark).includes('已保存'), true, 'saved-mark 应含「已保存」')
 
   // 2. 脏状态（dirty）：卡片高亮、字数与 UTF-8 字节数精确计算、未保存徽章与动态原因反馈
   let discarded = false
@@ -1547,6 +1874,7 @@ test('阶段四：Prompt 编辑器脏状态（dirty）高亮、字数/字节数�
 
   const dirtyCard = findAll(dirtyTree, n => n.props?.className && String(n.props.className).includes('dirty'))[0]
   assert.equal(Boolean(dirtyCard), true, '有修改时编辑器卡片应带有 .dirty 高光类名')
+  assert.equal(findAll(dirtyTree, n => n.props?.className === 'bkl-saved-mark').length, 0, '脏状态不应显示 saved-mark')
 
   // 字数与字节数精确统计（字数 · 字节数）
   const countNode = findAll(dirtyTree, n => n.props?.id === 'prompt-count' || (n.props?.style && textOf(n).includes('字')))[0]
@@ -1650,6 +1978,39 @@ test('阶段四：规则页清单损坏（corrupt）与空态 StateBlock 居中�
   assert.equal(Boolean(newFirstBtn), true, '空态中应提供新建规则入口')
   newFirstBtn.props.onClick({ preventDefault() {} })
   assert.equal(newClicked, true, '点击新建按钮应触发 onNew')
+})
+
+test('P3：规则 ID 计数（ruleIdCount）随 edit.id 变化', () => {
+  const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
+  assert.equal(typeof exported.RulesBlock, 'function', 'RulesBlock 必须被导出')
+  const renderEdit = (id) => mount(exported.RulesBlock({
+    rules: [],
+    activeRule: null,
+    rulesIndex: 'ok',
+    rulesIndexPath: 'breaklimit/rules.json',
+    selectedId: null,
+    body: { id: null, status: 'idle', text: '' },
+    edit: { isNew: true, id, name: '', target: 'AGENTS.md', text: '', baseline: null },
+    busy: false,
+    onNew() {},
+    onOpen() {},
+    onEdit() {},
+    onEditChange() {},
+    onSave() {},
+    onCancelEdit() {},
+    onActivate() {},
+    onDeactivate() {},
+    onDelete() {},
+    onRecover() {},
+    onRetryBody() {},
+    noticeView: null,
+  }))
+  const tree3 = renderEdit('abc')
+  const count3 = findAll(tree3, n => n.type === 'span' && textOf(n) === '3 / 64')[0]
+  assert.equal(Boolean(count3), true, 'id 为 abc 时应显示计数 3 / 64')
+  const tree7 = renderEdit('abcdefg')
+  const count7 = findAll(tree7, n => n.type === 'span' && textOf(n) === '7 / 64')[0]
+  assert.equal(Boolean(count7), true, 'id 变化时计数应跟着变成 7 / 64')
 })
 
 test('阶段四：规则删除安全把手（ack 勾选解锁）与损坏清单重置安全把手（confirmWord 精确输入解锁）', () => {
@@ -1794,6 +2155,14 @@ test('阶段五收官：词库页双栏响应式布局、长词优先本地替�
   assert.equal(chipsText.includes('DeepSeek → 深度求索'), true, '命中药丸必须包含 DeepSeek 映射')
   assert.equal(chipsText.includes('AI → 人工智能'), false, '未命中的短词 AI 不得出现在命中药丸中')
 
+  // 列表表头三条文案（原词 / 替换为 / 操作），列结构与行布局对齐
+  const wordHead = findAll(tree, n => n.props?.className === 'bkl-word-head')[0]
+  assert.equal(Boolean(wordHead), true, '列表 <ul> 前应渲染 bkl-word-head 表头')
+  const headText = textOf(wordHead)
+  assert.equal(headText.includes('原词'), true, '表头应含「原词」列')
+  assert.equal(headText.includes('替换为'), true, '表头应含「替换为」列')
+  assert.equal(headText.includes('操作'), true, '表头应含「操作」列')
+
   // 2. 搜索过滤与清除联动
   const searchTree = mount(exported.WordsPage({
     store: dummyStore,
@@ -1862,13 +2231,32 @@ test('阶段五收官：词库容量守卫（100 条上限 Notice/禁用）与�
   assert.equal(Boolean(limitNotice), true, '达到 100 条上限时必须渲染容量守卫 Notice 通报条')
   assert.equal(textOf(limitNotice).includes('仍可编辑或删除已有词条'), true, '容量守卫 Notice 必须明确告知仍可编辑或删除已有词条')
 
-  // 3. 已有词条的编辑与删除保持可用
-  const editButtons = findAll(fullTree, n => n.type === 'button' && textOf(n).includes('编辑'))
-  const delButtons = findAll(fullTree, n => n.type === 'button' && textOf(n).includes('删除'))
+  // 3. 已有词条的编辑与删除保持可用。图标钮无可见文本，
+  //    按 props.label（编辑词条 … / 删除词条 …）在原始 Button 节点上查找；
+  //    kind/off 是 Button 入参，mount 展开后就落到 className/aria-disabled 上了。
+  const rawFull = exported.WordsPage({
+    store: fullStore,
+    query: '',
+    setQuery: () => {},
+    previewText: '',
+    setPreviewText: () => {},
+    onAdd: () => {},
+    onEdit: () => {},
+    onDelete: () => {},
+    onRetryRead: () => {},
+    onReturnChat: () => {},
+    canReturn: false,
+  })
+  const editButtons = findAll(rawFull, n => n.type === exported.Button && String(n.props?.label ?? '').includes('编辑词条'))
+  const delButtons = findAll(rawFull, n => n.type === exported.Button && String(n.props?.label ?? '').includes('删除词条'))
   assert.equal(editButtons.length > 0, true, '已有词条必须渲染编辑按钮')
   assert.equal(delButtons.length > 0, true, '已有词条必须渲染删除按钮')
   assert.equal(editButtons[0].props?.off, undefined, '达到上限时不应禁用已有词条的编辑功能')
   assert.equal(delButtons[0].props?.off, undefined, '达到上限时不应禁用已有词条的删除功能')
+  assert.equal(editButtons[0].props?.kind, 'icon', '行编辑按钮应为 icon 形态')
+  assert.equal(delButtons[0].props?.kind, 'icon', '行删除按钮应为 icon 形态')
+  assert.equal(textOf(editButtons[0]), '', '图标按钮应无可见文本（图标 aria-hidden）')
+  assert.equal(textOf(delButtons[0]), '', '图标按钮应无可见文本（图标 aria-hidden）')
 
   // 4. 输入 64 字符边界与容量校验
   const term64A = 'A'.repeat(64)
@@ -1924,7 +2312,9 @@ test('阶段五收官：会话浮窗微窗口（dockPanel）外观、标题栏�
   exported.aliasStore.state.entries = fiveEntries
   exported.aliasStore.state.phase = 'ready'
 
-  const tree = mount(exported.AliasRow({}))
+  // 原始树留一份：Icon 的 props.name 在 mount 展开后就没了，bolt 断言要在原始树上做。
+  const rawTree = exported.AliasRow({})
+  const tree = mount(rawTree)
   const dialogs = findAll(tree, n => n.props && n.props.role === 'dialog')
   assert.equal(dialogs.length, 1, '浮窗展开时必须渲染一个 role="dialog" 窗口')
   const panel = dialogs[0]
@@ -1961,5 +2351,158 @@ test('阶段五收官：会话浮窗微窗口（dockPanel）外观、标题栏�
   assert.equal(panelAllText.includes('Esc 关闭 · 每次改动单独保存'), true, '页脚必须渲染 dockFooterHint 提示')
   const openSettingsBtn = findAll(panel, n => n.type === 'button' && textOf(n).includes('打开完整设置'))[0]
   assert.equal(Boolean(openSettingsBtn), true, '页脚必须提供「打开完整设置」直达按钮')
+
+  // 5. P4 换皮结构：dock-section 分区、标题栏 bolt 图标、独立页脚与两列模式卡
+  const sections = findAll(panel, n => n.props?.className === 'dock-section')
+  assert.equal(sections.length, 2, '正文应拆成两个 dock-section 分区')
+  const titlebarRaw = findAll(rawTree, n => n.props?.className === 'dock-titlebar')[0]
+  assert.equal(Boolean(titlebarRaw), true, '标题栏应带 dock-titlebar 类名')
+  assert.equal(findAll(titlebarRaw, n => n.props?.name === 'bolt').length > 0, true, '标题栏应含 Icon name="bolt"（mount 展开后 name 消失，必须在原始树断言）')
+  const footer = findAll(panel, n => n.props?.className === 'dock-footer')[0]
+  assert.equal(Boolean(footer), true, '页脚应为独立 dock-footer 分区')
+  const footText = textOf(footer)
+  assert.equal(footText.includes('Esc 关闭 · 每次改动单独保存'), true, '页脚应含 dockFooterHint')
+  assert.equal(footText.includes('打开完整设置'), true, '页脚应含「打开完整设置」')
+  const panelKids = panel.children.filter(Boolean)
+  assert.equal(panelKids.some(kid => kid.props?.className === 'dock-footer'), true, '页脚必须是 panel 直接子项（移出滚动区）')
+  const pressedButtons = findAll(panel, n => n.type === 'button' && n.props?.['aria-pressed'] !== undefined)
+  assert.equal(pressedButtons.length, 2, '模式卡应仍是两个 aria-pressed 按钮')
 })
 
+
+test('P2 壳层：页签五图标、patches 计数角标、错误红徽章与脏点', () => {
+  // 1. 五页签各带图标
+  const base = loadSectionHarness(async () => {})
+  const tree = base.render()
+  const tabs = findAll(tree, n => n.props?.role === 'tab')
+  assert.equal(tabs.length, 5, '应有 5 个页签')
+  const expectedIcons = ['grid', 'patch', 'text', 'file', 'dictionary']
+  tabs.forEach((tab, index) => {
+    const icon = findAll(tab, n => n.type === base.exported.Icon)[0]
+    assert.equal(Boolean(icon), true, `页签 ${String(index)} 应带图标`)
+    assert.equal(icon.props.name, expectedIcons[index], `页签 ${String(index)} 图标名应为 ${expectedIcons[index]}`)
+  })
+
+  // 2. patches 计数角标：数字 + title；loading 期间 words 不报错（红徽章只看 failed/stale）
+  const pending = loadSectionHarness(async () => {}, { status: { preflight: { pendingFiles: 3 } } })
+  const pendingTree = pending.render()
+  const pendingTabs = findAll(pendingTree, n => n.props?.role === 'tab')
+  const patchesTab = pendingTabs.find(t => t.props.id === 'bkl-tab-patches')
+  const countBadge = findAll(patchesTab, n => n.type === 'span' && n.props?.title === '3 个文件待写入')[0]
+  assert.equal(Boolean(countBadge), true, 'patches 页签应有计数角标（title 为 tabPendingTitle）')
+  assert.equal(textOf(countBadge), '3', '角标文本应为数字')
+  const wordsTab = pendingTabs.find(t => t.props.id === 'bkl-tab-words')
+  assert.equal(textOf(wordsTab).includes('有错误'), false, 'loading 期间 words 不应带错误 sr-only 文本')
+  assert.equal(findAll(wordsTab, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true' && textOf(n) === '!').length, 0, 'loading 期间 words 不应有红色 ! 徽章')
+
+  // 3. 规则损坏红徽章
+  const corrupt = loadSectionHarness(async () => {}, { status: { rulesIndex: 'corrupt' } })
+  const corruptTabs = findAll(corrupt.render(), n => n.props?.role === 'tab')
+  const rulesTab = corruptTabs.find(t => t.props.id === 'bkl-tab-rules')
+  assert.equal(textOf(rulesTab).includes('有错误'), true, 'rules 损坏应带错误 sr-only 文本')
+  assert.equal(findAll(rulesTab, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true' && textOf(n) === '!').length, 1, 'rules 应有 aria-hidden 红色 ! 徽章')
+
+  // 3b. 补丁阻断红徽章（预检 blocked）：计数角标与红徽章允许同时出现
+  const blocked = loadSectionHarness(async () => {}, { status: { preflight: { ok: false, code: 'blocked', blocked: ['src/a.js'], pendingFiles: 2 } } })
+  const blockedTabs = findAll(blocked.render(), n => n.props?.role === 'tab')
+  const blockedPatchesTab = blockedTabs.find(t => t.props.id === 'bkl-tab-patches')
+  assert.equal(textOf(blockedPatchesTab).includes('有错误'), true, 'patches 阻断应带错误 sr-only 文本')
+  assert.equal(findAll(blockedPatchesTab, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true' && textOf(n) === '!').length, 1, 'patches 阻断应有 aria-hidden 红色 ! 徽章')
+  assert.equal(findAll(blockedPatchesTab, n => n.type === 'span' && n.props?.title === '2 个文件待写入').length, 1, '阻断时计数角标仍保留')
+
+  // 3c. 提示词读取失败红徽章（promptError 槽位 = 6）
+  const promptFail = loadSectionHarness(async () => {}, { hooks: { 6: { title: '正文读取失败', next: '重试' } } })
+  const promptFailTabs = findAll(promptFail.render(), n => n.props?.role === 'tab')
+  const promptTabFail = promptFailTabs.find(t => t.props.id === 'bkl-tab-prompt')
+  assert.equal(textOf(promptTabFail).includes('有错误'), true, 'prompt 读取失败应带错误 sr-only 文本')
+  assert.equal(findAll(promptTabFail, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true' && textOf(n) === '!').length, 1, 'prompt 读取失败应有 aria-hidden 红色 ! 徽章')
+
+  // 4. prompt / rules 脏点：注入 override+draft 与 ruleEdit
+  const dirty = loadSectionHarness(async () => {}, {
+    hooks: {
+      5: { text: 'base text' },
+      16: 'changed text',
+      18: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'new', isNew: false, baseline: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'old' } },
+    },
+  })
+  const dirtyTabs = findAll(dirty.render(), n => n.props?.role === 'tab')
+  const promptTab = dirtyTabs.find(t => t.props.id === 'bkl-tab-prompt')
+  assert.equal(textOf(promptTab).includes('有未保存的改动'), true, 'prompt 有草稿应带脏点 sr-only 文本')
+  const dirtyRulesTab = dirtyTabs.find(t => t.props.id === 'bkl-tab-rules')
+  assert.equal(textOf(dirtyRulesTab).includes('有未保存的改动'), true, 'rules 编辑中应带脏点 sr-only 文本')
+  assert.equal(findAll(promptTab, n => n.type === 'span' && n.props?.['aria-hidden'] === 'true').length >= 1, true, '脏点装饰应 aria-hidden')
+})
+
+test('P2 壳层：顶栏品牌与版本徽章、帮助钮与可选关闭钮', () => {
+  // 1. 无 props.close：不渲染关闭钮
+  const noClose = loadSectionHarness(async () => {})
+  const tree = noClose.render()
+  assert.equal(findAll(tree, n => n.type === noClose.exported.Button && n.props?.label === '关闭设置，查看会话').length, 0, '宿主没给 close 就不渲染关闭钮')
+  const helpBtn = findAll(tree, n => n.type === noClose.exported.Button && n.props?.label === '查看使用说明')[0]
+  assert.equal(Boolean(helpBtn), true, '应渲染帮助图标钮（helpLabel）')
+  assert.equal(helpBtn.props.kind, 'icon', '帮助钮应为 icon 形态')
+
+  // 2. 版本徽章：无 tone 的 Tag，文本为 0.9.3
+  const versionTag = findAll(tree, n => n.type === noClose.exported.Tag && textOf(n) === '0.9.3')[0]
+  assert.equal(Boolean(versionTag), true, '顶栏应渲染版本徽章 0.9.3')
+  assert.equal(versionTag.props?.tone, undefined, '版本徽章不应带 tone（不出圆点）')
+
+  // 3. 传 close：渲染关闭钮且点击会调用
+  const withClose = loadSectionHarness(async () => {})
+  let closed = 0
+  const tree2 = withClose.render({ close: () => { closed += 1 } })
+  const closeBtn = findAll(tree2, n => n.type === withClose.exported.Button && n.props?.label === '关闭设置，查看会话')[0]
+  assert.equal(Boolean(closeBtn), true, '传入 close 后应渲染关闭钮')
+  closeBtn.props.onClick()
+  assert.equal(closed, 1, '点击关闭钮应调用 closeSettings')
+})
+
+test('P2 壳层：帮助 Dialog 标题与三步骤文案来自 TEXT', () => {
+  const harness = loadSectionHarness(async () => {})
+  const { exported } = harness
+  const tree1 = harness.render()
+  const helpBtn = findAll(tree1, n => n.type === exported.Button && n.props?.label === '查看使用说明')[0]
+  helpBtn.props.onClick()
+
+  const tree2 = harness.render()
+  const dialogNode = findAll(tree2, n => n.type === exported.Dialog && n.props?.open === true)[0]
+  assert.equal(Boolean(dialogNode), true, '点击帮助钮应打开 Dialog')
+  assert.equal(dialogNode.props.title, '从配置到生效', '弹窗标题应为 helpTitle')
+  assert.equal(dialogNode.props.tone, 'accent', '帮助弹窗应为 accent tone')
+  assert.equal(dialogNode.props.yes, undefined, '帮助弹窗不传 yes（只有取消）')
+  assert.equal(dialogNode.props.cancelText, '关闭', '帮助弹窗底部按钮应为「关闭」而非「取消」')
+  const bodyText = textOf({ children: [dialogNode.props.body] })
+  for (const copy of ['选择提示词模式', '选择需要的补丁', '应用，并重启宿主', '先沿用推荐模式，之后也能随时切换。', '看清用途再打开开关；开关只记下选择，不改源码。', '应用前会列出要改的文件，写入后按原方式重启。']) {
+    assert.equal(bodyText.includes(copy), true, `弹窗正文应含「${copy}」`)
+  }
+  assert.equal(bodyText.includes('源码补丁重启宿主后加载'), true, '弹窗应含生效时机一句')
+})
+
+test('Dialog：cancelText 真的渲染成底部按钮文案', () => {
+  const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
+  // 不用「关闭」测：弹窗头部本身有一个「关闭」图标钮，同名会撞。
+  const tree = mount(exported.Dialog({ open: true, title: 'x', cancelText: '继续' }))
+  const dialogEl = findAll(tree, n => n.type === 'dialog')[0]
+  assert.equal(Boolean(dialogEl), true, '应渲染 dialog 元素')
+  const inner = dialogEl.children[0]
+  const foot = inner.children[inner.children.length - 1]
+  const footButtons = findAll(foot, n => n.type === 'button' && textOf(n) === '继续')
+  assert.equal(footButtons.length, 1, '底部应有且仅有一个文本为「继续」的按钮（cancelText 必须渲染出来）')
+})
+
+test('aliasReadError：loading 不算错误，failed 与 stale 才算', () => {
+  const { exported } = loadClient()
+  assert.equal(typeof exported.aliasReadError, 'function', 'aliasReadError 必须被导出')
+  assert.equal(exported.aliasReadError({ phase: 'loading' }), false, 'loading 是正常过程，不报错')
+  assert.equal(exported.aliasReadError({ phase: 'failed' }), true, '读取失败应报错')
+  assert.equal(exported.aliasReadError({ phase: 'ready', stale: true }), true, '数据过期应报错')
+  assert.equal(exported.aliasReadError({ phase: 'ready', stale: false }), false, '就绪且新鲜不报错')
+})
+
+test('P2 壳层：PLUGIN_VERSION 与 package.json version 同步', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const source = fs.readFileSync(CLIENT, 'utf8')
+  const match = /const PLUGIN_VERSION = "([^"]*)"/.exec(source)
+  assert.equal(Boolean(match), true, 'client.js 应含 const PLUGIN_VERSION = "..." 常量（改名或挪走都会失配）')
+  assert.equal(match[1], pkg.version, `PLUGIN_VERSION（${match[1]}）应等于 package.json version（${pkg.version}）`)
+})

@@ -27,12 +27,17 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   const inject = ["slots"]
   const SECTION_ID = "breaklimit"
   const SECTION_ORDER = 45
+  // 与 package.json 同步，发版时两处一起改。不运行时读 package.json。
+  const PLUGIN_VERSION = "0.9.3"
   const API = "/breaklimit"
   const REQUEST_TIMEOUT_MS = 20000
   const NOTICE_OK_MS = 5000
+  // 对齐 frontend.v2.html:307 的 toast 停留时长。
+  const TOAST_MS = 4200
   const CLOCK_MS = 30000
   const STYLE_ID = "bkl-scoped-style"
   const TAB_KEYS = ["overview", "patches", "prompt", "rules", "words"]
+  const TAB_ICON = { overview: "grid", patches: "patch", prompt: "text", rules: "file", words: "dictionary" }
   const MODES = ["recommended", "unrestricted"]
   const RULE_TARGETS = ["AGENTS.md", "CLAUDE.md"]
   const RULE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/
@@ -94,6 +99,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     fontApp: "17px",
     fontPage: "22px",
     fontSection: "15px",
+    fontBody: "14px",
     fontLabel: "13px",
     fontHelp: "12px",
     fontMicro: "11px",
@@ -120,9 +126,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     gapField: "14px",
     gapLabel: "6px",
-    gapBlock: "24px",
-    padCard: "18px",
-    padRow: "14px",
+    gapBlock: "28px",
+    padCard: "20px",
+    padRow: "16px",
   }
 
   const TONE_COLOR = { ok: tk.ok, warn: tk.warn, error: tk.error, info: tk.accent, accent: tk.accent, idle: tk.line4 }
@@ -136,6 +142,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     header: { display: "flex", alignItems: "flex-start", gap: "12px" },
     headText: { display: "flex", flexDirection: "column", gap: "4px", flex: "1 1 auto", minWidth: 0 },
     title: { margin: 0, fontSize: tk.fontApp, lineHeight: 1.35, fontWeight: 600, letterSpacing: "-0.2px", color: tk.label },
+    // 顶栏品牌块与标题行：品牌 38px 圆角图标块 + 标题/版本徽章同排。
+    brandMark: {
+      display: "grid", placeItems: "center", width: "38px", height: "38px",
+      borderRadius: tk.rMd, background: tk.accentSoft, color: tk.accent, flexShrink: 0,
+    },
+    titleRow: { display: "flex", alignItems: "center", gap: "8px" },
     lead: { margin: 0, fontSize: tk.fontLabel, color: tk.label3 },
     headAside: { display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
     stamp: { font: tk.fontSmall, color: tk.caption, whiteSpace: "nowrap" },
@@ -175,6 +187,19 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "inline-flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap",
     },
     tabOn: { font: tk.fontStrong, color: tk.label, borderBottom: `2px solid ${tk.accent}` },
+    // 页签角标：待写入计数（accent 药丸）与错误/脏点的包装（含 sr-only 文本）。
+    tabCount: {
+      minWidth: "18px", padding: "0 5px", borderRadius: tk.rXl,
+      background: tk.accentSoft, color: tk.accent,
+      fontSize: tk.fontMicro, fontWeight: 700, lineHeight: "17px", textAlign: "center",
+    },
+    tabBadge: {
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      minWidth: "16px", height: "16px", padding: "0 4px", borderRadius: tk.rXl,
+      background: tk.errorSoft, color: tk.error,
+      fontSize: tk.fontMicro, fontWeight: 700, lineHeight: 1,
+    },
+    tabTagWrap: { display: "inline-flex", alignItems: "center" },
     panel: { display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 },
 
     card: {
@@ -190,6 +215,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     text: { margin: 0, color: tk.label2 },
     small: { margin: 0, fontSize: tk.fontHelp, color: tk.label3 },
     caption: { fontSize: tk.fontHelp, color: tk.caption },
+    savedMark: { display: "inline-flex", alignItems: "center", gap: "5px", fontSize: tk.fontHelp, color: tk.ok },
     strong: { font: tk.fontStrong, color: tk.label },
     row: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" },
     spacer: { flex: "1 1 auto" },
@@ -204,6 +230,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     btnDanger: { background: tk.error, border: "0.5px solid transparent", color: tk.onFill },
     btnQuiet: { background: "transparent", border: "0.5px solid transparent", color: tk.label2, padding: "5px 8px" },
     btnQuietDanger: { background: "transparent", border: "0.5px solid transparent", color: tk.error, padding: "5px 8px" },
+    // 文字链：无边框底色，accent 着色；hover 下划线见 SCOPED_CSS（内联写不出 :hover）。
+    btnLink: { background: "transparent", border: "none", color: tk.accent, padding: "2px 0", minHeight: 0, font: tk.fontStrong, gap: "5px", justifyContent: "flex-start" },
+    // 纯图标钮：透明圆角，hover 变底色见 SCOPED_CSS。
+    btnIcon: { background: "transparent", border: "none", color: tk.label2, padding: "6px", minWidth: 0, borderRadius: tk.rSm },
     btnSmall: { minHeight: "26px", padding: "3px 10px", font: tk.fontSmallStrong },
     btnOff: { opacity: 0.45, cursor: "not-allowed" },
 
@@ -211,6 +241,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "inline-flex", alignItems: "center", gap: "4px", minHeight: "18px", padding: "0 6px",
       borderRadius: tk.rXs, border: `0.5px solid ${tk.line2}`, font: tk.fontSmall, color: tk.label3, whiteSpace: "nowrap",
     },
+    tagTone: { border: "0.5px solid currentColor" },
     dot: { display: "inline-block", width: "6px", height: "6px", borderRadius: tk.rXs, flexShrink: 0 },
 
     switchTrack: {
@@ -327,6 +358,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "6px",
       padding: "10px 12px", borderRadius: tk.rSm, background: tk.well,
     },
+    helpBoxTitle: { margin: 0, fontSize: tk.fontLabel, fontWeight: 600, color: tk.label },
+    helpBoxList: { display: "grid", gridTemplateColumns: "auto 1fr", gap: "5px 12px", margin: 0, fontSize: tk.fontHelp },
+    helpBoxKey: { color: tk.label3 },
+    statusFooter: {
+      marginTop: "14px", paddingTop: "12px", borderTop: `0.5px solid ${tk.line2}`,
+      fontSize: tk.fontMicro, color: tk.label3, display: "flex", alignItems: "center", gap: "6px",
+    },
 
     empty: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "8px", padding: "16px", borderRadius: tk.rSm, border: `0.5px dashed ${tk.line3}` },
     ol: { margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "4px", color: tk.label2 },
@@ -361,6 +399,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     wordSearchIcon: { position: "absolute", left: "8px", top: "8px", color: tk.label3, font: tk.fontSmall, pointerEvents: "none" },
     wordSearchClear: { position: "absolute", right: "2px", top: "2px" },
     wordList: { margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", border: `0.5px solid ${tk.line2}`, borderRadius: tk.rSm, overflow: "hidden" },
+    wordHead: { display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px", fontSize: tk.fontHelp, color: tk.label3 },
     wordRow: { display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderTop: `0.5px solid ${tk.line1}`, flexWrap: "wrap" },
     wordRowFirst: { borderTop: "none" },
     wordCells: { flex: "1 1 240px", minWidth: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", gap: "8px", alignItems: "center" },
@@ -401,6 +440,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     confirmWordLabel: { fontSize: tk.fontHelp, color: tk.label2 },
     confirmWordTarget: { fontFamily: tk.mono, color: tk.error, padding: "0 4px", background: tk.errorSoft, borderRadius: tk.rXs },
     confirmWordInput: { maxWidth: "260px", fontFamily: tk.mono },
+    // 成功说明块：弹窗内告诉用户「成功长什么样」或「可以撤销」的绿框。
+    successSign: {
+      display: "flex", flexDirection: "column", gap: "2px", margin: "4px 0 0",
+      padding: "10px 12px", border: `1px solid ${tk.okLine}`, background: tk.okSoft,
+      borderRadius: tk.rSm, fontSize: tk.fontHelp, color: tk.label2,
+    },
+    successSignTitle: { color: tk.ok, fontSize: tk.fontHelp },
 
     // StateBlock 居中四态
     stateBlock: {
@@ -460,6 +506,22 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "inline-block", width: "13px", height: "13px", border: `2px solid currentColor`,
       borderRightColor: "transparent", borderRadius: "50%", animation: "bkl-spin 0.8s linear infinite",
     },
+
+    // 底部 toast：fixed 相对视口，宿主设置面板内也落屏幕底部居中。
+    // 模态 <dialog> 在 top layer，z-index 盖不过它；当前弹窗内没有复制入口，
+    // 弹窗内若要加复制反馈，需把 toast 渲染进弹窗或改用 Notice。
+    toast: {
+      position: "fixed", bottom: "25px", left: "50%", transform: "translateX(-50%)", zIndex: 40,
+      display: "flex", alignItems: "center", gap: "10px",
+      maxWidth: "min(560px, calc(100vw - 32px))", padding: "10px 18px 10px 12px",
+      borderRadius: tk.rMd, background: tk.tooltipBg, color: tk.tooltipText,
+      boxShadow: tk.shadowPop, font: tk.font,
+    },
+    toastText: { minWidth: 0, overflowWrap: "anywhere" },
+    srOnly: {
+      position: "absolute", width: "1px", height: "1px", margin: "-1px", padding: 0,
+      overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+    },
   }
 
   // 只放伪类与动效：内联样式做不到 :hover / :focus-visible / 减弱动态。背景类
@@ -473,6 +535,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-btn, .bkl-root .bkl-tab, .bkl-root .bkl-hover, .bkl-root .bkl-radio, .bkl-root .bkl-switch { transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, box-shadow 120ms ease; }",
     ".bkl-root .bkl-btn-plain:not([aria-disabled=\"true\"]):hover, .bkl-root .bkl-hover:hover { background-color: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)) !important; }",
     ".bkl-root .bkl-btn-fill:not([aria-disabled=\"true\"]):hover { opacity: 0.90; filter: brightness(1.05); }",
+    ".bkl-root .bkl-btn-link:not([aria-disabled=\"true\"]):hover { text-decoration: underline; text-underline-offset: 3px; }",
+    ".bkl-root .bkl-btn-icon:not([aria-disabled=\"true\"]):hover { background-color: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)) !important; color: var(--dsw-alias-label-primary) !important; }",
+    ".bkl-root .bkl-btn-icon.bkl-word-del:not([aria-disabled=\"true\"]):hover { color: var(--dsw-alias-state-error-primary) !important; }",
     ".bkl-root .bkl-tab:hover { color: var(--dsw-alias-label-primary) !important; }",
     ".bkl-root .bkl-radio:not([aria-checked=\"true\"]):hover { border-color: var(--dsw-alias-border-l4) !important; }",
     ".bkl-root .bkl-knob { transition: transform 120ms ease; }",
@@ -531,26 +596,22 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-columns { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 24px; align-items: start; }",
     "@media (max-width: 840px) { .bkl-root .bkl-columns { grid-template-columns: minmax(0, 1fr); } }",
 
-    // 响应式平衡双栏网格
-    ".bkl-root .bkl-balanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }",
-    "@media (max-width: 860px) { .bkl-root .bkl-balanced-grid { grid-template-columns: 1fr; } }",
-
-    // 通栏 Hero 主行动卡片
-    ".bkl-root .bkl-hero-card { --tone: var(--dsw-alias-state-business-primary); --toneSoft: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); --toneLine: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); padding: 20px 24px; border: 1px solid var(--toneLine); border-left: 4px solid var(--tone); border-radius: var(--dsw-radius-lg, 12px); position: relative; overflow: hidden; background: linear-gradient(90deg, var(--toneSoft), var(--dsw-alias-bg-layer-1) 45%); display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }",
-    ".bkl-root .bkl-hero-card.warn { --tone: var(--dsw-alias-state-warn-primary); --toneSoft: var(--dsw-alias-state-warn-tertiary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)); --toneLine: var(--dsw-alias-state-warn-secondary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 36%, transparent)); }",
-    ".bkl-root .bkl-hero-card.error { --tone: var(--dsw-alias-state-error-primary); --toneSoft: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); --toneLine: var(--dsw-alias-state-error-secondary, color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent)); }",
-    ".bkl-root .bkl-hero-card.ok { --tone: var(--dsw-alias-state-success-primary); --toneSoft: var(--dsw-alias-state-success-tertiary, color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent)); --toneLine: var(--dsw-alias-state-success-secondary, color-mix(in srgb, var(--dsw-alias-state-success-primary) 32%, transparent)); }",
-    ".bkl-root .bkl-hero-left { display: flex; align-items: center; gap: 16px; min-width: 0; }",
-    ".bkl-root .bkl-hero-icon { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; background: var(--dsw-alias-bg-layer-1); border: 1.5px solid var(--toneLine); color: var(--tone); box-shadow: 0 2px 8px color-mix(in srgb, #000 6%, transparent); }",
-    ".bkl-root .bkl-hero-icon svg { width: 24px; height: 24px; }",
-    ".bkl-root .bkl-hero-texts { display: flex; flex-direction: column; gap: 4px; min-width: 0; }",
-    ".bkl-root .bkl-hero-eyebrow { display: flex; align-items: center; gap: 6px; color: var(--tone); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }",
-    ".bkl-root .bkl-hero-card h2, .bkl-root .bkl-hero-title { font-size: 18px; margin: 0; font-weight: 700; color: var(--dsw-alias-label-primary); letter-spacing: -0.2px; }",
-    ".bkl-root .bkl-hero-card p, .bkl-root .bkl-hero-desc { font-size: 13px; color: var(--dsw-alias-label-secondary); line-height: 1.5; margin: 0; }",
-    ".bkl-root .bkl-hero-right { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex-shrink: 0; max-width: 480px; }",
-    ".bkl-root .bkl-hero-card .bkl-btn-hero, .bkl-root .bkl-hero-right > .bkl-btn-fill { min-height: 38px !important; padding: 8px 18px !important; font-size: 13px !important; font-weight: 600 !important; }",
-    "@media (max-width: 860px) { .bkl-root .bkl-hero-card { flex-direction: column; align-items: flex-start; gap: 16px; } .bkl-root .bkl-hero-right { width: 100%; align-items: flex-start; max-width: 100%; } }",
-    ".bkl-root .bkl-balanced-card { height: 100% !important; }",
+    // 三步引导（Guide）：展开态进度 + 步骤行；关闭态是 link 按钮，无需样式。
+    ".bkl-root .bkl-guide { padding: 4px 20px; }",
+    ".bkl-root .bkl-guide-title { padding: 14px 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }",
+    ".bkl-root .bkl-guide-title h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
+    ".bkl-root .bkl-guide-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }",
+    ".bkl-root .bkl-guide-bar { width: 72px; height: 5px; border-radius: 5px; background: var(--dsw-alias-bg-layer-3); overflow: hidden; }",
+    ".bkl-root .bkl-guide-bar span { display: block; height: 100%; background: var(--dsw-alias-state-success-primary); border-radius: 5px; }",
+    ".bkl-root .bkl-guide-item { display: flex; align-items: flex-start; gap: 12px; padding: 14px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }",
+    ".bkl-root .bkl-guide-item.is-current { margin: 0 -20px; padding-inline: 20px; background: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); border-top-color: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); }",
+    ".bkl-root .bkl-step-num { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--dsw-alias-border-l4); border-radius: 50%; font-size: 11px; font-weight: 700; flex: none; margin-top: 1px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-1); }",
+    ".bkl-root .bkl-step-num svg { width: 13px; height: 13px; }",
+    ".bkl-root .bkl-step-num.done { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-label-primary-foreground, #ffffff); }",
+    ".bkl-root .bkl-step-num.current { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }",
+    ".bkl-root .bkl-guide-item strong { display: block; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
+    ".bkl-root .bkl-guide-item p { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin: 2px 0 0; }",
+    ".bkl-root .bkl-guide-item .bkl-btn-link { margin-left: auto; flex: none; align-self: center; font-size: 12px; }",
 
     // 主行动卡片
     ".bkl-root .bkl-action-card { --tone: var(--dsw-alias-state-business-primary); --toneSoft: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); --toneLine: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); padding: 24px 26px; border: 1px solid var(--toneLine); border-radius: var(--dsw-radius-lg, 12px); position: relative; overflow: hidden; background: linear-gradient(160deg, var(--toneSoft), var(--dsw-alias-bg-layer-1) 62%); }",
@@ -633,6 +694,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     // Prompt 编辑器脏状态
     ".bkl-root .editor-card.dirty { border-color: var(--dsw-alias-state-warn-secondary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)) !important; box-shadow: 0 0 0 1px var(--dsw-alias-state-warn-secondary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 36%, transparent)); }",
+    ".bkl-root .editor-card.dirty .bkl-card-head { box-shadow: inset 3px 0 0 var(--dsw-alias-state-warn-primary); background: var(--dsw-alias-state-warn-tertiary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)); }",
   ].join("\n")
 
   const TEXT = {
@@ -934,6 +996,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       fieldId: "规则 ID",
       fieldIdHint: "字母或数字开头，可用字母、数字、点、下划线、连字符，最多 64 个字符。",
       fieldIdLocked: "ID 创建后不能改；想换 ID 请新建一条。",
+      ruleIdCount: (n) => `${String(n)} / 64`,
       fieldName: "显示名称（可选）",
       fieldNameHint: "留空就用 ID。",
       fieldTarget: "写入哪个文件",
@@ -1061,6 +1124,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptReadRetry: "重新读取正文",
       promptUnknownPlaceholder: "（读取失败，内容未知）",
       promptCountUnknown: "内容未知",
+      savedMark: "已保存",
       whyPromptUnread: "正文还没读取成功，不能编辑或保存。",
       promptSavingHint: "正在保存已提交的内容，你可以继续编辑；新输入会保留。",
       donePromptSavedMore: "已保存提交的内容；编辑器里还有新的未保存修改",
@@ -1098,6 +1162,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       wordsEmptyAdd: "添加第一条词条",
       wordsEditLabel: (from) => `编辑词条 ${String(from)}`,
       wordsDeleteLabel: (from) => `删除词条 ${String(from)}`,
+      wordsColFrom: "原词",
+      wordsColTo: "替换为",
+      wordsColActions: "操作",
       wordsEachSave: "每次操作单独保存。搜索只影响列表，不改变替换范围与处理顺序。",
       wordsPreviewTitle: "试一试替换效果",
       wordsPreviewDesc: "使用已保存的词库，文字只在本页处理。",
@@ -1268,7 +1335,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       overviewConfigDesc: "这几项互相独立，按需要调整。",
       overviewEnvTitle: "环境与权限",
       overviewEnvDesc: "提示词模式决定附加指令与执行层上限，不能代替沙箱权限设置。",
-      overviewEffectTitle: "改动生效时机与技术诊断",
+      overviewEffectTitle: "改动什么时候生效？",
       overviewEffectPatches: "源码补丁",
       overviewEffectPatchesDesc: "应用后重启宿主",
       overviewEffectPrompt: "提示词",
@@ -1369,6 +1436,28 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockManageAllWords: "管理全部词条",
       dockAliasInlineDefault: "原词与替换词各最多 64 字符。",
       dockModeHint: "切换前会确认影响，下一轮生效，不改变沙箱权限。",
+
+      // P2 壳层与概览：顶栏、帮助弹窗、三步引导、页签角标
+      helpLabel: "查看使用说明",
+      closeSettingsLabel: "关闭设置，查看会话",
+      helpTitle: "从配置到生效",
+      helpIntro: "先选择提示词模式，再挑选源码补丁。应用前检查影响与快照，应用后重启同一宿主。",
+      helpEffect: "源码补丁重启宿主后加载；提示词与模式下一轮对话生效；长期规则激活后写入指令文件；词库保存后新开会话生效。",
+      guideTitle: "第一次配置，按这三步来",
+      guideProgress: (n) => `已完成 ${String(n)} / 3`,
+      guideDefaultHint: "已有默认值",
+      guideStep1Title: "选择提示词模式",
+      guideStep1Body: "先沿用推荐模式，之后也能随时切换。",
+      guideStep2Title: "选择需要的补丁",
+      guideStep2Body: "看清用途再打开开关；开关只记下选择，不改源码。",
+      guideStep3Title: "应用，并重启宿主",
+      guideStep3Body: "应用前会列出要改的文件，写入后按原方式重启。",
+      guideGo: "去完成",
+      guideView: "查看",
+      tabPendingTitle: (n) => `${String(n)} 个文件待写入`,
+      tabErrorLabel: "有错误",
+      tabDirtyLabel: "有未保存的改动",
+      envCheckedAt: (t) => `检查于${String(t)}`,
     },
     en: {
       nav: "Breaklimit",
@@ -1667,6 +1756,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       fieldId: "Rule ID",
       fieldIdHint: "Starts with a letter or digit; letters, digits, dot, underscore and dash; up to 64 characters.",
       fieldIdLocked: "The ID cannot change after creation. Create a new rule for a new ID.",
+      ruleIdCount: (n) => `${String(n)} / 64`,
       fieldName: "Display name (optional)",
       fieldNameHint: "Leave empty to use the ID.",
       fieldTarget: "Which file to write",
@@ -1795,6 +1885,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptReadRetry: "Read the prompt again",
       promptUnknownPlaceholder: "(read failed, content unknown)",
       promptCountUnknown: "Content unknown",
+      savedMark: "Saved",
       whyPromptUnread: "The prompt has not been read yet, so editing and saving are paused.",
       promptSavingHint: "Saving the submitted text; you can keep typing. New input is kept.",
       donePromptSavedMore: "Saved the submitted text; newer edits are still unsaved",
@@ -1832,6 +1923,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       wordsEmptyAdd: "Add the first entry",
       wordsEditLabel: (from) => `Edit entry ${String(from)}`,
       wordsDeleteLabel: (from) => `Delete entry ${String(from)}`,
+      wordsColFrom: "Original",
+      wordsColTo: "Replacement",
+      wordsColActions: "Actions",
       wordsEachSave: "Each change is saved on its own. Search only filters the list, not the replacement scope or order.",
       wordsPreviewTitle: "Try the replacement",
       wordsPreviewDesc: "Uses the saved list; the text stays on this page.",
@@ -2002,7 +2096,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       overviewConfigDesc: "These settings are independent; adjust as needed.",
       overviewEnvTitle: "Environment and permissions",
       overviewEnvDesc: "Prompt mode dictates instructions and execution limits; it does not replace sandbox settings.",
-      overviewEffectTitle: "When changes take effect & technical diagnostics",
+      overviewEffectTitle: "When do changes take effect?",
       overviewEffectPatches: "Source patches",
       overviewEffectPatchesDesc: "Restart host after applying",
       overviewEffectPrompt: "Prompt",
@@ -2103,6 +2197,28 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockManageAllWords: "Manage All Entries",
       dockAliasInlineDefault: "At most 64 characters each for original and replacement.",
       dockModeHint: "Impact confirmed before switching; applies next turn without altering sandbox permissions.",
+
+      // P2 shell & overview: header, help dialog, three-step guide, tab badges
+      helpLabel: "Open the user guide",
+      closeSettingsLabel: "Close settings and return to the chat",
+      helpTitle: "From setup to effect",
+      helpIntro: "Pick a prompt mode first, then choose the source patches. Review the impact and snapshot before applying; restart the same host afterwards.",
+      helpEffect: "Source patches load after a host restart; prompt and mode changes apply from the next turn; rules take effect once activated into instruction files; the word list applies to new sessions after saving.",
+      guideTitle: "First-time setup in three steps",
+      guideProgress: (n) => `Done ${String(n)} / 3`,
+      guideDefaultHint: "Has a default",
+      guideStep1Title: "Pick a prompt mode",
+      guideStep1Body: "Start with Recommended; you can switch any time.",
+      guideStep2Title: "Pick the patches you need",
+      guideStep2Body: "Review what each one does before switching it on; switches only record choices and never touch source files.",
+      guideStep3Title: "Apply, then restart the host",
+      guideStep3Body: "Files to change are listed before applying; restart the host the way you always do afterwards.",
+      guideGo: "Go",
+      guideView: "View",
+      tabPendingTitle: (n) => `${String(n)} files pending`,
+      tabErrorLabel: "Has errors",
+      tabDirtyLabel: "Has unsaved changes",
+      envCheckedAt: (t) => `Checked ${String(t)}`,
     },
   }
 
@@ -2501,6 +2617,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       notice.activateRule = edit.id
     }
     return notice
+  }
+
+  // 词库读取错误判定：loading 是正常过程，不报错；只有读取失败或数据过期才算错误。
+  function aliasReadError(state) {
+    return state?.phase === "failed" || state?.stale === true
   }
 
   /** 词库共享状态。requests 注入 get/put，测试可以直接喂假接口。 */
@@ -3004,7 +3125,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
    */
   function Button({ kind = "plain", size, off, reason, describedBy, label, expanded, controls, buttonRef, autofocus, className = "", style, onClick, children }) {
     const filled = kind === "primary" || kind === "danger"
-    const classes = ["bkl-btn", filled ? "bkl-btn-fill" : "bkl-btn-plain", className].filter(Boolean).join(" ")
+    const link = kind === "link"
+    const icon = kind === "icon"
+    const classes = ["bkl-btn", filled ? "bkl-btn-fill" : link ? "bkl-btn-link" : icon ? "bkl-btn-icon" : "bkl-btn-plain", className].filter(Boolean).join(" ")
     return h("button", {
       type: "button",
       ref: buttonRef,
@@ -3017,7 +3140,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         kind === "danger" && S.btnDanger,
         kind === "quiet" && S.btnQuiet,
         kind === "quietDanger" && S.btnQuietDanger,
-        size === "small" && S.btnSmall,
+        link && S.btnLink,
+        icon && S.btnIcon,
+        size === "small" && !link && !icon && S.btnSmall,
         off && S.btnOff,
         style,
       ),
@@ -3059,7 +3184,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
   function Tag({ tone, children }) {
     const color = tone === undefined ? null : TONE_COLOR[tone]
-    return h("span", { style: merge(S.tag, color && { color, border: "0.5px solid currentColor" }) }, children)
+    return h("span", { style: merge(S.tag, color && S.tagTone, color && { color }) },
+      color ? h("span", { "aria-hidden": "true", style: merge(S.dot, { background: "currentColor", borderRadius: "50%" }) }) : null,
+      children)
   }
 
   function Card({ className, title, titleId, desc, descId, aside, style, children }) {
@@ -3067,7 +3194,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     return h("section", { className: cardClass, style: merge(S.card, style), "aria-labelledby": title === undefined ? undefined : titleId },
       title === undefined
         ? null
-        : h("div", { style: S.cardHead },
+        : h("div", { className: "bkl-card-head", style: S.cardHead },
           h("div", { style: S.cardHeadText },
             h("h3", { id: titleId, style: S.cardTitle }, title),
             desc === undefined ? null : h("p", { id: descId, style: S.small }, desc)),
@@ -3109,6 +3236,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     chevron: "m9 18 6-6-6-6",
     plus: "M12 5v14M5 12h14",
     trash: "M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2",
+    edit: "M15 5l4 4M4 20l4-1L21 6l-4-4L4 16v4Z",
+    grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+    text: "M4 5h16M12 5v15M8 20h8",
+    help: "M9 8a3 3 0 0 1 6 0c0 2-3 2-3 5M12 17h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
   }
 
   function Icon({ name, size = 16, style, className = "" }) {
@@ -3356,6 +3487,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ack,
     confirmWord,
     consequence,
+    success,
     yes,
     cancelText,
     busy = false,
@@ -3447,6 +3579,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h("span", null, consequence.text))
       : null
 
+    const successView = success
+      ? h("div", { key: "success", className: "bkl-success-sign", style: S.successSign },
+          h("strong", { style: S.successSignTitle }, success.title),
+          h("span", null, success.text))
+      : null
+
     const ackView = ack
       ? h("label", {
           key: "ack",
@@ -3512,15 +3650,48 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     },
       h("div", { style: S.dialogInner },
         h("div", { style: S.dialogHead },
-          h(Dot, { tone: tone ?? "accent" }),
+          h("span", {
+            "aria-hidden": "true",
+            style: merge(S.dialogIcon, (tone === "danger" || tone === "error") && S.dialogIconDanger),
+          }, h(Icon, { name: (tone === "danger" || tone === "error") ? "alert" : "shield", size: 17 })),
           h("h3", { id: titleId, style: S.dialogTitle }, title),
           h(Button, { kind: "quiet", size: "small", label: T.dismissShort, onClick: onClose }, T.dismissShort)),
         h("div", { id: bodyId, style: S.dialogBody },
           body,
+          successView,
           consequenceView,
           ackView,
           confirmWordView),
         h("div", { style: S.dialogFoot }, footView)))
+  }
+
+  /**
+   * 底部居中短反馈（toast）。只放「已完成」级别的确认文案；
+   * 需要用户决定或带有后续步骤的结果仍走 Notice。
+   * 视觉部分不带 live region——播报由常驻 Announcer 负责，避免同一句读两遍。
+   */
+  function Toast({ text }) {
+    return h("div", {
+      className: "bkl-toast",
+      "data-bkl-toast": "true",
+      "aria-hidden": "true",
+      style: S.toast,
+    },
+      h(Icon, { name: "check", size: 16, style: { color: tk.toastIcon, flexShrink: 0 } }),
+      h("span", { style: S.toastText }, text))
+  }
+
+  /**
+   * 常驻播报区。读屏只可靠播报「已有区域的内容变化」，插入即带文本的节点
+   * 可能不播或与可见节点各播一遍，所以它常驻树中、只改文本。
+   */
+  function Announcer({ text }) {
+    return h("div", {
+      role: "status",
+      "aria-live": "polite",
+      "data-bkl-toast-announcer": "true",
+      style: S.srOnly,
+    }, text)
   }
 
   /** 词条原词 → 替换词 的成对展示；纯文本渲染，不把用户输入当 HTML。 */
@@ -3662,7 +3833,53 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       }))
   }
 
-  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, guideOpen, onToggleGuide, onCopy }) {
+  // 三步引导卡：独立组件（不在 tablist 内）。展开态显示进度与三步链接，
+  // 关闭态只留一个 link 按钮。三步的完成条件与 flowSteps 同源数据（f/restart）。
+  function GuideBlock({ f, open, onToggle, onGo }) {
+    const steps = [
+      { title: T.guideStep1Title, body: T.guideStep1Body, tab: "prompt", done: true, defaultHint: true },
+      { title: T.guideStep2Title, body: T.guideStep2Body, tab: "patches", done: f.enabledCount > 0, defaultHint: false },
+      { title: T.guideStep3Title, body: T.guideStep3Body, tab: "patches", done: f.applied !== null && !f.restartPending, defaultHint: false },
+    ]
+    const doneCount = steps.filter(step => step.done).length
+    const currentIndex = steps.findIndex(step => !step.done)
+    if (!open) {
+      return h("div", null,
+        h(Button, { kind: "link", onClick: onToggle },
+          h(Icon, { name: "help", size: 15 }),
+          T.guideShow))
+    }
+    return h("section", { className: "bkl-guide", "aria-labelledby": "bkl-guide-title" },
+      h("div", { className: "bkl-guide-title" },
+        h("h3", { id: "bkl-guide-title" }, T.guideTitle),
+        h("div", { className: "bkl-guide-progress" },
+          h("span", null, T.guideProgress(doneCount)),
+          h("span", { className: "bkl-guide-bar", "aria-hidden": "true" },
+            h("span", { style: { width: `${String(Math.round((doneCount / 3) * 100))}%` } })),
+          h(Button, { kind: "link", label: T.guideHide, onClick: onToggle }, T.guideHide))),
+      steps.map((step, index) => {
+        const now = index === currentIndex
+        return h("div", { key: String(index), className: now ? "bkl-guide-item is-current" : "bkl-guide-item" },
+          h("span", {
+            className: step.done ? "bkl-step-num done" : now ? "bkl-step-num current" : "bkl-step-num",
+            "aria-hidden": "true",
+          }, step.done ? h(Icon, { name: "check", size: 13 }) : String(index + 1)),
+          h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
+            h("strong", null,
+              step.title,
+              step.defaultHint ? h("span", { style: merge(S.small, { marginLeft: "8px", fontWeight: 400 }) }, T.guideDefaultHint) : null),
+            h("p", null, step.body)),
+          h(Button, {
+            kind: "link",
+            label: `${step.title} · ${now ? T.guideGo : T.guideView}`,
+            onClick: () => { onGo(step.tab) },
+          },
+            now ? T.guideGo : T.guideView,
+            h(Icon, { name: "chevron", size: 15 })))
+      }))
+  }
+
+  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, guideOpen, onToggleGuide, onCopy, loadedAt, onOpenHelp }) {
     const target = status?.target ?? {}
     const rootHint = status?.hostRoot ? `${T.rootSource(status.hostRootSource)}${T.sep}${String(status.hostRoot)}` : T.rootMissingShort
     let preValue = T.unknown
@@ -3677,9 +3894,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const actionToneClass = actionCard.tone ? ` ${actionCard.tone}` : ""
     const steps = flowSteps(status, f)
 
-    const wordsSummaryText = words?.phase !== "ready" || words?.stale
-      ? T.wordsSummaryFailed
-      : words?.entries?.length === 0 ? T.wordsSummaryEmpty : T.wordsSummaryCount(words?.entries?.length ?? 0)
+    const wordsSummaryText = words?.phase === "loading"
+      ? T.aliasLoading
+      : aliasReadError(words)
+        ? T.wordsSummaryFailed
+        : words?.entries?.length === 0 ? T.wordsSummaryEmpty : T.wordsSummaryCount(words?.entries?.length ?? 0)
 
     return h("div", { style: S.panel },
       // 1. 顶部调用 PageHead（从这里开始，page: "overview"）
@@ -3697,36 +3916,31 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               h("span", { className: "bkl-sub" }, sub)))
         })),
 
-      // 3. 第二层：通栏 Hero 主行动卡片（全宽横贯，左侧图标+文案，右侧按钮与重启通知）
-      h("section", { className: `bkl-hero-card${actionToneClass}`, "aria-labelledby": "bkl-action-title" },
-        h("div", { className: "bkl-hero-left" },
-          h("div", { className: "bkl-hero-icon", "aria-hidden": "true" },
-            h(Icon, { name: actionCard.icon, size: 24 })),
-          h("div", { className: "bkl-hero-texts" },
-            h("div", { className: "bkl-hero-eyebrow" }, actionCard.label),
-            h("h2", { id: "bkl-action-title", className: "bkl-hero-title" }, actionCard.title),
-            h("p", { className: "bkl-hero-desc" }, actionCard.body))),
-        h("div", { className: "bkl-hero-right" },
-          h(Button, {
-            kind: "primary",
-            className: "bkl-btn-hero",
-            off: busy,
-            reason: T.whyBusy,
-            onClick: () => { onRun(actionCard.action) },
-          }, actionCard.button),
-          restart !== null ? restartView : null,
-          nextNotice ?? null)),
-
-      // 4. 第三层：1:1 双栏平衡网格（左右高度约 340px 严格对齐）
-      h("div", { className: "bkl-balanced-grid" },
-        // 左栏：核心配置与接管卡片（4 项配置：提示词模式、长期规则、目标词库、破限接管 Switch 就地开关）
-        h("div", { style: { display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 } },
+      // 3. 第二层起：bkl-columns 双栏（左：行动卡、Guide、配置卡；右：环境卡、help-box、技术诊断）
+      h("div", { className: "bkl-columns" },
+        // 左栏：主行动卡 + 三步引导 + 核心配置与接管（4 行尾部都是 link，接管行是 Switch）
+        h("div", { style: { display: "flex", flexDirection: "column", gap: tk.gapBlock, minWidth: 0 } },
+          h("section", { className: `bkl-action-card${actionToneClass}`, "aria-labelledby": "bkl-action-title" },
+            h("div", { className: "bkl-action-eyebrow" },
+              h("span", { className: "bkl-icon-wrap", "aria-hidden": "true" },
+                h(Icon, { name: actionCard.icon, size: 14 })),
+              actionCard.label),
+            h("h2", { id: "bkl-action-title" }, actionCard.title),
+            h("p", null, actionCard.body),
+            h("div", { className: "bkl-action-actions" },
+              h(Button, {
+                kind: "primary",
+                off: busy,
+                reason: T.whyBusy,
+                onClick: () => { onRun(actionCard.action) },
+              }, actionCard.button),
+              restart !== null ? restartView : null,
+              nextNotice ?? null)),
+          h(GuideBlock, { f, open: guideOpen, onToggle: onToggleGuide, onGo }),
           h(Card, {
-            className: "bkl-balanced-card",
             title: T.overviewConfigTitle,
             titleId: "bkl-config-title",
             desc: T.overviewConfigDesc,
-            style: { height: "100%" },
           },
             h("div", { className: "bkl-summary-list" },
               // 1) 提示词模式
@@ -3736,7 +3950,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("div", { className: "bkl-summary-label" }, T.rowMode),
                   h("strong", null, modeLabel(f.mode)),
                   h("p", null, f.customPrompt ? T.promptMineSummary : T.promptBuiltinSummary)),
-                h(Button, { kind: "quiet", size: "small", onClick: () => { onGo("prompt") } }, T.adjustPrompt)),
+                h(Button, { kind: "link", onClick: () => { onGo("prompt") } }, T.adjustPrompt, h(Icon, { name: "chevron", size: 15 }))),
               // 2) 长期规则
               h("div", { className: "bkl-summary-row" },
                 h("span", { className: "bkl-summary-icon" }, h(Icon, { name: "file", size: 18 })),
@@ -3744,7 +3958,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("div", { className: "bkl-summary-label" }, T.rowRules),
                   h("strong", null, f.rulesIndex === "corrupt" ? T.rulesCorruptShort : activeRule ? (activeRule.name || activeRule.id) : T.rulesNoneShort),
                   h("p", null, f.rulesIndex === "corrupt" ? T.rulesCorruptSummary : activeRule ? T.rulesActiveSummary(activeRule.target) : T.rulesInactiveSummary)),
-                h(Button, { kind: "quiet", size: "small", onClick: () => { onGo("rules") } }, f.rulesIndex === "corrupt" ? T.viewDetails : T.manageRules)),
+                h(Button, { kind: "link", onClick: () => { onGo("rules") } }, f.rulesIndex === "corrupt" ? T.viewDetails : T.manageRules, h(Icon, { name: "chevron", size: 15 }))),
               // 3) 目标词库
               h("div", { className: "bkl-summary-row" },
                 h("span", { className: "bkl-summary-icon" }, h(Icon, { name: "dictionary", size: 18 })),
@@ -3752,7 +3966,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("div", { className: "bkl-summary-label" }, T.rowWords),
                   h("strong", null, wordsSummaryText),
                   h("p", null, T.wordsSummaryHint)),
-                h(Button, { kind: "quiet", size: "small", onClick: () => { onGo("words") } }, T.manageWords)),
+                h(Button, { kind: "link", onClick: () => { onGo("words") } }, T.manageWords, h(Icon, { name: "chevron", size: 15 }))),
               // 4) 破限接管开关 Switch，支持就地切换
               h("div", { className: "bkl-summary-row" },
                 h("span", { className: "bkl-summary-icon" }, h(Icon, { name: "bolt", size: 18 })),
@@ -3781,9 +3995,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                     : warning?.code === "default_policy_never" ? T.warnPolicyNever : T.warnOther(warning?.code ?? "")))),
               h("p", { style: S.small }, T.warnNext))),
 
-        // 右栏：运行环境与权限卡片 + 改动生效时机与技术诊断卡片（带一键脱敏复制与提示）
+        // 右栏：环境与权限卡 + 生效时机 help-box + 技术诊断 disclosure
         h("div", { style: { display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 } },
-          // a. 运行环境与权限卡片（包含宿主版本、提示词模式、实际权限、预检状态、宿主路径）
+          // a. 运行环境与权限卡片（宿主版本、提示词模式、实际权限、预检状态、宿主路径、检查时间）
           h(Card, { title: T.overviewEnvTitle, titleId: "bkl-status-title" },
             h("div", { className: "bkl-status-lines" },
               h("div", null,
@@ -3815,38 +4029,49 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 color: "var(--dsw-alias-label-secondary)",
               },
             }, rootHint),
-            h("p", { style: merge(S.small, { marginTop: "10px", color: "var(--dsw-alias-label-tertiary)" }) }, T.overviewEnvDesc)),
+            h("p", { style: merge(S.small, { marginTop: "10px", color: "var(--dsw-alias-label-tertiary)" }) }, T.overviewEnvDesc),
+            loadedAt > 0
+              ? h("div", { style: S.statusFooter },
+                h(Icon, { name: "clock", size: 14 }),
+                h("span", null, T.envCheckedAt(formatAgo(loadedAt))))
+              : null),
 
-          // b. 改动生效时机与技术诊断卡片（带一键脱敏复制与提示）
-          h(Card, { title: T.overviewEffectTitle, titleId: "bkl-timing-title" },
-            h("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 14px", fontSize: "12px" } },
-              h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 550 } }, T.overviewEffectPatches),
-              h("span", { style: { color: "var(--dsw-alias-label-primary)" } }, T.overviewEffectPatchesDesc),
-              h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 550 } }, T.overviewEffectPrompt),
-              h("span", { style: { color: "var(--dsw-alias-label-primary)" } }, T.overviewEffectPromptDesc),
-              h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 550 } }, T.overviewEffectRules),
-              h("span", { style: { color: "var(--dsw-alias-label-primary)" } }, T.overviewEffectRulesDesc),
-              h("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 550 } }, T.overviewEffectWords),
-              h("span", { style: { color: "var(--dsw-alias-label-primary)" } }, T.overviewEffectWordsDesc)),
-            h("details", { className: "bkl-disclosure", style: { marginTop: "12px" } },
-              h("summary", null, T.overviewDiagTitle),
-              h("pre", { style: merge(S.codeBlock, { whiteSpace: "pre-wrap", marginTop: "10px", fontSize: "11px", lineHeight: 1.6 }) }, diagText),
-              h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginTop: "10px", flexWrap: "wrap" } },
-                h("span", { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary)" } }, T.overviewDiagNote),
-                h(Button, {
-                  size: "small",
-                  kind: "quiet",
-                  onClick: () => {
-                    if (typeof onCopy === "function") {
-                      onCopy(diagText)
-                    } else if (typeof navigator !== "undefined" && navigator.clipboard) {
-                      void navigator.clipboard.writeText(diagText)
-                    }
-                  },
+          // b. 改动生效时机 help-box（四条 + 使用说明链接，打开帮助弹窗）
+          h("div", { style: S.helpBox },
+            h("h4", { style: S.helpBoxTitle }, T.overviewEffectTitle),
+            h("div", { style: S.helpBoxList },
+              h("span", { style: S.helpBoxKey }, T.overviewEffectPatches),
+              h("span", null, T.overviewEffectPatchesDesc),
+              h("span", { style: S.helpBoxKey }, T.overviewEffectPrompt),
+              h("span", null, T.overviewEffectPromptDesc),
+              h("span", { style: S.helpBoxKey }, T.overviewEffectRules),
+              h("span", null, T.overviewEffectRulesDesc),
+              h("span", { style: S.helpBoxKey }, T.overviewEffectWords),
+              h("span", null, T.overviewEffectWordsDesc)),
+            h(Button, { kind: "link", onClick: onOpenHelp },
+              T.helpLabel,
+              h(Icon, { name: "arrow", size: 15 }))),
+
+          // c. 技术诊断折叠块（带一键脱敏复制与提示）
+          h("details", { className: "bkl-disclosure" },
+            h("summary", null, T.overviewDiagTitle),
+            h("pre", { style: merge(S.codeBlock, { whiteSpace: "pre-wrap", marginTop: "10px", fontSize: "11px", lineHeight: 1.6 }) }, diagText),
+            h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginTop: "10px", flexWrap: "wrap" } },
+              h("span", { style: { fontSize: "11px", color: "var(--dsw-alias-label-tertiary)" } }, T.overviewDiagNote),
+              h(Button, {
+                size: "small",
+                kind: "quiet",
+                onClick: () => {
+                  if (typeof onCopy === "function") {
+                    onCopy(diagText)
+                  } else if (typeof navigator !== "undefined" && navigator.clipboard) {
+                    void navigator.clipboard.writeText(diagText)
+                  }
                 },
-                  h(Icon, { name: "copy", size: 13 }),
-                  " ",
-                  T.overviewDiagCopy)))))))
+              },
+                h(Icon, { name: "copy", size: 13 }),
+                " ",
+                T.overviewDiagCopy))))))
   }
 
   // ---- 补丁 -----------------------------------------------------------------
@@ -4093,7 +4318,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           },
             h("div", { className: "mode-head" },
               h("div", { className: "mode-title" },
-                h(Icon, { name: recommended ? "checkCircle" : "zap", size: 16 }),
+                h(Icon, { name: recommended ? "checkCircle" : "bolt", size: 16 }),
                 titleContent),
               tags.length > 0 ? h("div", { style: S.row }, tags) : null),
             h("div", { className: "tradeoff" },
@@ -4186,7 +4411,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     },
       promptError === null
         ? null
-        : h(Notice, { notice: { tone: "error", title: T.promptReadFailedTitle, next: T.promptReadFailedNext, action: "retryPrompt" }, onAction: () => { onRetry?.() } }),
+        : h(StateBlock, {
+          tone: "error",
+          title: T.promptReadFailedTitle,
+          body: T.promptReadFailedNext,
+          // StateBlock 的 actions 只渲染数组（.length > 0 才出操作行），单个元素会被吞掉。
+          actions: [
+            h(Button, { kind: "primary", size: "small", onClick: () => { onRetry?.() } }, T.promptReadRetry),
+          ],
+        }),
       effectiveBad
         ? h(Notice, { notice: { tone: "warn", title: T.injectBad(override.effective.code), next: T.injectBadNext } })
         : null,
@@ -4206,6 +4439,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h("span", { id: "prompt-count", style: S.caption },
           loaded ? T.promptCountExact(value.length, utf8Bytes) : T.promptCountUnknown),
         dirty ? h(Tag, { tone: "warn" }, T.promptDirty) : null,
+        loaded && !dirty
+          ? h("span", { className: "bkl-saved-mark", style: S.savedMark },
+            h(Icon, { name: "check", size: 14 }),
+            T.savedMark)
+          : null,
         h("span", { style: S.spacer }),
         dirty ? h(Button, { kind: "quiet", size: "small", onClick: () => { onDiscard?.() } }, T.discard) : null,
         h(Button, { kind: "quiet", size: "small", off: !loaded, reason: T.whyPromptUnread, onClick: () => { onCopy(value) } }, T.copyAll),
@@ -4239,7 +4477,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       h("h4", { id: "bkl-rule-editor-title", style: S.cardTitle }, edit.isNew ? T.editorNewTitle : T.editorEditTitle(edit.name || edit.id)),
       h("div", { style: S.fieldGrid },
         h("div", { style: S.field },
-          h("label", { htmlFor: "bkl-rule-id", style: S.fieldLabel }, T.fieldId),
+          h("div", { style: S.row },
+            h("label", { htmlFor: "bkl-rule-id", style: S.fieldLabel }, T.fieldId),
+            h("span", { style: S.spacer }),
+            h("span", { style: S.wordCounter }, T.ruleIdCount(edit.id.length))),
           h("input", {
             id: "bkl-rule-id",
             className: "bkl-input",
@@ -4561,21 +4802,35 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   body: T.wordsNoMatchBody,
                   action: h(Button, { size: "small", onClick: () => { setQuery("") } }, T.wordsSearchClear),
                 })
-                : h("ul", { style: merge(S.wordList, store.stale && S.wordStale), "aria-labelledby": "bkl-words-list-title" },
-                  rows.map((item, row) => h("li", { key: `${String(item.index)}:${String(item.entry.from)}`, style: merge(S.wordRow, row === 0 && S.wordRowFirst) },
+                : [
+                  h("div", {
+                    key: "word-head",
+                    className: "bkl-word-head",
+                    style: S.wordHead,
+                  },
                     h("div", { style: S.wordCells },
-                      h("span", { style: S.wordCell }, String(item.entry.from)),
-                      h("span", { "aria-hidden": "true", style: { color: tk.label3 } }, "\u2192"),
-                      h("span", { style: S.wordCell }, String(item.entry.to))),
-                    h("div", { style: S.wordActions },
-                      h(Button, {
-                        kind: "quiet", size: "small", label: T.wordsEditLabel(item.entry.from),
-                        off: locked ? true : undefined, onClick: () => { onEdit(item.index) },
-                      }, T.edit),
-                      h(Button, {
-                        kind: "quietDanger", size: "small", label: T.wordsDeleteLabel(item.entry.from),
-                        off: locked ? true : undefined, onClick: () => { onDelete(item.index) },
-                      }, T.del))))),
+                      h("span", null, T.wordsColFrom),
+                      h("span", { "aria-hidden": "true", style: { color: tk.label3, visibility: "hidden" } }, "→"),
+                      h("span", null, T.wordsColTo)),
+                    h("div", { style: S.wordActions }, T.wordsColActions)),
+                  h("ul", { key: "word-list", style: merge(S.wordList, store.stale && S.wordStale), "aria-labelledby": "bkl-words-list-title" },
+                    rows.map((item, row) => h("li", { key: `${String(item.index)}:${String(item.entry.from)}`, style: merge(S.wordRow, row === 0 && S.wordRowFirst) },
+                      h("div", { style: S.wordCells },
+                        h("span", { style: S.wordCell }, String(item.entry.from)),
+                        h("span", { "aria-hidden": "true", style: { color: tk.label3 } }, "\u2192"),
+                        h("span", { style: S.wordCell }, String(item.entry.to))),
+                      h("div", { style: S.wordActions },
+                        h(Button, {
+                          kind: "icon", size: "small", label: T.wordsEditLabel(item.entry.from),
+                          className: "bkl-word-edit",
+                          off: locked ? true : undefined, onClick: () => { onEdit(item.index) },
+                        }, h(Icon, { name: "edit", size: 15 })),
+                        h(Button, {
+                          kind: "icon", size: "small", label: T.wordsDeleteLabel(item.entry.from),
+                          className: "bkl-word-del",
+                          off: locked ? true : undefined, onClick: () => { onDelete(item.index) },
+                        }, h(Icon, { name: "trash", size: 15 })))))),
+                ],
           h("p", { style: S.small }, T.wordsEachSave)),
         h("aside", { style: merge(S.card, S.wordAside), "aria-labelledby": "bkl-words-preview-title" },
           h("h3", { id: "bkl-words-preview-title", style: S.cardTitle }, T.wordsPreviewTitle),
@@ -4713,6 +4968,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [toggles, setToggles] = useState({})
     const [enabledPending, setEnabledPending] = useState(false)
     const [dialog, setDialog] = useState(null)
+    const [toast, setToast] = useState(null)
     const [notices, setNotices] = useState({})
     const [restart, setRestart] = useState(null)
     const [draft, setDraft] = useState(null)
@@ -4728,6 +4984,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [, bump] = useState(0)
     const mounted = useRef(true)
     const noticeTimers = useRef({})
+    // toast 自动消失的计时器；先于清理函数声明，清理路径引用它才不依赖执行时机。
+    const toastTimer = useRef(undefined)
     // 正文草稿的影子副本：保存完成后要判断「保存期间是不是又输入了」，
     // 而那时闭包里的 draft 是旧值，只能信实时副本。
     const draftRef = useRef(null)
@@ -4741,6 +4999,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       return () => {
         mounted.current = false
         for (const timer of Object.values(noticeTimers.current)) clearTimeout(timer)
+        if (toastTimer.current !== undefined) clearTimeout(toastTimer.current)
       }
     }, [])
 
@@ -4795,6 +5054,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         delete next[scope]
         return next
       })
+    }, [])
+
+    // 底部 toast：短确认文案（复制成功、已保存等）自动消失；同一时刻只留最新一条。
+    const showToast = useCallback((text) => {
+      if (toastTimer.current !== undefined) clearTimeout(toastTimer.current)
+      setToast(text)
+      toastTimer.current = setTimeout(() => {
+        toastTimer.current = undefined
+        if (mounted.current) setToast(null)
+      }, TOAST_MS)
     }, [])
 
     const notify = useCallback((scope, notice) => {
@@ -4910,8 +5179,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const copy = useCallback(async (text, scope) => {
       const ok = await writeClipboard(text)
       if (!mounted.current) return
-      notify(scope, ok ? { tone: "ok", title: T.copied } : { tone: "warn", title: T.copyFailed, next: T.copyFailedNext })
-    }, [notify])
+      // 复制成功是「已完成」短反馈走 toast；失败需要用户决定下一步，保留 Notice。
+      if (ok) showToast(T.copied)
+      else notify(scope, { tone: "warn", title: T.copyFailed, next: T.copyFailedNext })
+    }, [notify, showToast])
 
     const goTab = useCallback((key) => {
       setTab(key)
@@ -4922,6 +5193,23 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     // Esc / 取消 / 点遮罩都原样退出，不留下半截状态。
     const openDialog = useCallback((spec) => { setDialog(spec) }, [])
     const closeDialog = useCallback(() => { setDialog(null) }, [])
+
+    // 使用说明弹窗：三步 + 生效时机一句。不传 yes；只读说明没有可放弃的操作，
+    // 底部按钮文案用「关闭」而不是「取消」。
+    const openHelp = useCallback(() => {
+      openDialog({
+        title: T.helpTitle,
+        tone: "accent",
+        cancelText: T.dismissShort,
+        body: h("div", { style: S.wordEditorFields },
+          h("p", { style: S.text }, T.helpIntro),
+          h("ol", { style: S.ol },
+            h("li", null, h("strong", null, T.guideStep1Title), h("p", { style: S.small }, T.guideStep1Body)),
+            h("li", null, h("strong", null, T.guideStep2Title), h("p", { style: S.small }, T.guideStep2Body)),
+            h("li", null, h("strong", null, T.guideStep3Title), h("p", { style: S.small }, T.guideStep3Body))),
+          h("p", { style: S.small }, T.helpEffect)),
+      })
+    }, [openDialog])
 
     const accept = useCallback(() => {
       const current = dialog
@@ -5467,18 +5755,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }
 
     const tabLabel = (key) => (key === "overview" ? T.tabOverview : key === "patches" ? T.tabPatches : key === "prompt" ? T.tabPrompt : key === "rules" ? T.tabRules : T.tabWords)
-    const tabTone = (key) => {
-      if (status === null) return null
-      if (key === "patches") {
-        if (f.blocked.length > 0 || f.broken) return "error"
-        if (f.pendingFiles > 0) return "accent"
-        return null
-      }
-      if (key === "prompt") return promptError === null ? null : "error"
-      if (key === "rules") return f.rulesIndex === "corrupt" ? "error" : null
-      if (key === "words") return aliasStore.state.phase !== "ready" || aliasStore.state.stale ? "error" : null
-      return null
-    }
 
     let body
     if (status === null) {
@@ -5488,6 +5764,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     } else if (tab === "overview") {
       body = h(OverviewPage, {
         f, status, override, busy, enabledPending, restart, restartView,
+        loadedAt,
         step: nextStep(f, loadError),
         words: aliasStore.state,
         guideOpen,
@@ -5498,6 +5775,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         onGo: goTab,
         onToggleEnabled: (next) => { void toggleEnabled(next) },
         onCopy: (text) => { void copy(text, "overview") },
+        onOpenHelp: openHelp,
       })
     } else if (tab === "patches") {
       body = h(PatchesPage, {
@@ -5606,6 +5884,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       confirmWord: dialog?.confirmWord,
       consequence: dialog?.consequence,
       yes: dialog?.yes,
+      cancelText: dialog?.cancelText,
       busy,
       onAccept: accept,
       onClose: closeDialog,
@@ -5638,18 +5917,35 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       onClose: requestCloseWordEditor,
     })
 
+    // 播报区常驻（文本随 toast 变），视觉 toast 只在有文案时出现。
+    const announcerView = h(Announcer, { key: "toast-announcer", text: toast ?? "" })
+    const toastView = toast === null ? null : h(Toast, { key: "toast", text: toast })
+
     return h("div", { className: "bkl-root", style: S.root },
       h("header", { style: S.header },
+        h("div", { style: S.brandMark, "aria-hidden": "true" }, h(Icon, { name: "bolt", size: 21 })),
         h("div", { style: S.headText },
-          h("h2", { style: S.title }, T.title),
+          h("div", { style: S.titleRow },
+            h("h2", { style: S.title }, T.title),
+            h(Tag, null, PLUGIN_VERSION)),
           h("p", { style: S.lead }, T.lead)),
         h("div", { style: S.headAside },
           loadedAt > 0 ? h("span", { style: S.stamp, "aria-live": "off" }, T.refreshedAt(formatAgo(loadedAt))) : null,
-          h(Button, { size: "small", off: busy, reason: T.whyBusy, onClick: () => { void load() } }, T.refresh))),
+          h(Button, { size: "small", off: busy, reason: T.whyBusy, onClick: () => { void load() } }, T.refresh),
+          h(Button, { kind: "icon", label: T.helpLabel, onClick: openHelp }, h(Icon, { name: "help", size: 16 })),
+          closeSettings === null
+            ? null
+            : h(Button, { kind: "icon", label: T.closeSettingsLabel, onClick: () => { closeSettings() } }, h(Icon, { name: "close", size: 16 })))),
       h("div", { id: "bkl-tablist", role: "tablist", "aria-label": T.tabsLabel, style: S.tablist },
         TAB_KEYS.map((key, index) => {
           const selected = tab === key
-          const tone = tabTone(key)
+          const promptDirty = draft !== null && draft !== (typeof override?.text === "string" ? override.text : "")
+          const rulesDirty = isRuleEditDirty(ruleEdit)
+          // 页签错误徽章四态：规则清单损坏、词库读取失败/过期、补丁阻断/状态损坏、提示词读取失败。
+          const tabError = (key === "rules" && f.rulesIndex === "corrupt")
+            || (key === "words" && aliasReadError(aliasStore.state))
+            || (key === "patches" && (f.blocked.length > 0 || f.broken))
+            || (key === "prompt" && promptError !== null)
           return h("button", {
             key,
             id: `bkl-tab-${key}`,
@@ -5662,11 +5958,28 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             style: merge(S.tab, selected && S.tabOn),
             onClick: () => { goTab(key) },
             onKeyDown: (event) => { onTabKey(event, index) },
-          }, tabLabel(key), tone === null ? null : h(Dot, { tone }))
+          },
+            h(Icon, { name: TAB_ICON[key], size: 16 }),
+            tabLabel(key),
+            key === "patches" && f.pendingFiles > 0
+              ? h("span", { title: T.tabPendingTitle(f.pendingFiles), style: S.tabCount }, String(f.pendingFiles))
+              : null,
+            tabError
+              ? h("span", { style: S.tabTagWrap },
+                h("span", { "aria-hidden": "true", style: S.tabBadge }, "!"),
+                h("span", { style: S.srOnly }, T.tabErrorLabel))
+              : null,
+            (key === "prompt" && promptDirty) || (key === "rules" && rulesDirty)
+              ? h("span", { style: S.tabTagWrap },
+                h("span", { "aria-hidden": "true", style: merge(S.dot, { background: tk.warn }) }),
+                h("span", { style: S.srOnly }, T.tabDirtyLabel))
+              : null)
         })),
       h("div", { id: `bkl-panel-${tab}`, role: "tabpanel", "aria-labelledby": `bkl-tab-${tab}`, style: S.panel }, body),
       dialogView,
-      wordDialogView)
+      wordDialogView,
+      announcerView,
+      toastView)
   }
 
   // ---- 目标词表：输入框上方的常驻行 -----------------------------------------
@@ -5723,11 +6036,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "flex",
       flexDirection: "column",
       border: `1px solid ${tk.line2}`,
-      borderRadius: 8,
+      borderRadius: 12,
       background: tk.layer1,
       color: tk.label,
       fontSize: 13,
-      boxShadow: "0 12px 40px rgba(0,0,0,0.18)",
+      boxShadow: tk.shadowPop,
       overflow: "hidden",
     },
     titlebar: {
@@ -5738,7 +6051,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       height: 38,
       padding: "0 6px 0 12px",
       borderBottom: `1px solid ${tk.line1}`,
-      background: tk.well,
+      background: tk.layer2,
       cursor: "move",
       touchAction: "none",
       userSelect: "none",
@@ -5755,6 +6068,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       whiteSpace: "nowrap",
     },
     pillDot: { width: 5, height: 5, borderRadius: "50%", flex: "none" },
+    // 上下滚动阴影：前两层是随内容滚的表面渐隐遮罩（local），后两层是固定在
+    // 视口边缘的阴影（scroll），四层叠出「有更多内容」的提示，对齐原型 dock-body。
     body: {
       flex: 1,
       minHeight: 0,
@@ -5764,6 +6079,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       display: "flex",
       flexDirection: "column",
       gap: 10,
+      background: `linear-gradient(${tk.layer1} 30%, transparent) top / 100% 12px no-repeat local, linear-gradient(transparent, ${tk.layer1} 70%) bottom / 100% 12px no-repeat local, linear-gradient(color-mix(in srgb, ${tk.label} 8%, transparent), transparent) top / 100% 12px no-repeat scroll, linear-gradient(transparent, color-mix(in srgb, ${tk.label} 8%, transparent)) bottom / 100% 12px no-repeat scroll`,
+      backgroundColor: tk.layer1,
     },
     grip: {
       flex: "none",
@@ -5783,25 +6100,43 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     head: { display: "flex", alignItems: "center", justifyContent: "space-between" },
     title: { margin: 0, fontSize: 13, fontWeight: 600, color: tk.label },
     subhead: { margin: 0, fontSize: 12, fontWeight: 600, color: tk.label },
-    divider: { height: 1, background: tk.line1, margin: "2px 0" },
-    modeRow: { display: "flex", gap: 6 },
-    modeBtn: {
-      flex: 1,
-      padding: "4px 8px",
-      border: `1px solid ${tk.line2}`,
-      borderRadius: 6,
-      background: tk.well,
-      font: "inherit",
-      fontSize: 12,
-      color: tk.label2,
-      cursor: "pointer",
-      textAlign: "center",
+    section: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      paddingTop: 12,
+      borderTop: `1px solid ${tk.line1}`,
     },
-    modeBtnActive: {
+    sectionFirst: { paddingTop: 0, borderTop: "none" },
+    modeGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+    modeCard: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 3,
+      padding: "10px 12px",
+      border: `1px solid ${tk.line2}`,
+      borderRadius: 8,
       background: tk.layer1,
-      color: tk.label,
-      borderColor: tk.line3 ?? tk.line2,
-      fontWeight: 600,
+      font: "inherit",
+      textAlign: "left",
+      cursor: "pointer",
+    },
+    modeCardOn: {
+      borderColor: tk.accent,
+      background: tk.accentSoft,
+      boxShadow: `0 0 0 1px ${tk.accent}`,
+    },
+    modeCardTitle: { margin: 0, fontSize: 13, fontWeight: 600, color: tk.label },
+    modeCardSub: { margin: 0, fontSize: 11, color: tk.label3 },
+    footer: {
+      flex: "none",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      padding: "8px 12px",
+      borderTop: `1px solid ${tk.line1}`,
+      background: tk.layer2,
     },
     warnBox: {
       padding: "6px 8px",
@@ -6185,7 +6520,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               height: `${dockRect.height}px`,
             }),
           },
-            h("div", { style: ALIAS.titlebar, onPointerDown: (event) => { startGesture(event, "move") } },
+            h("div", { className: "dock-titlebar", style: ALIAS.titlebar, onPointerDown: (event) => { startGesture(event, "move") } },
+              h(Icon, { name: "bolt", size: 15, style: { color: tk.accent } }),
               h("span", { style: ALIAS.title }, T.dockPopoverTitle),
               h("span", {
                 style: merge(ALIAS.pill, {
@@ -6208,28 +6544,33 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 style: ALIAS.close,
                 "aria-label": T.aliasClose,
                 onClick: () => { setOpen(false); setPendingTier(null) },
-              }, "\u00D7")),
+              }, h(Icon, { name: "close", size: 14 }))),
             h("div", { style: ALIAS.body },
 
-            // 提示词模式快速切换。点一下只是选中待切换项，确认后才提交。
-            h("div", { style: ALIAS.subhead }, T.dockModeTitle),
-            h("div", { style: ALIAS.modeRow },
+            // 第一节：提示词模式快速切换。点一下只是选中待切换项，确认后才提交。
+            h("div", { className: "dock-section", style: merge(ALIAS.section, ALIAS.sectionFirst) },
+            h("h4", { style: ALIAS.subhead }, T.dockModeTitle),
+            h("div", { style: ALIAS.modeGrid },
               h("button", {
                 type: "button",
-                style: tier === "recommended" ? merge(ALIAS.modeBtn, ALIAS.modeBtnActive) : ALIAS.modeBtn,
+                style: tier === "recommended" ? merge(ALIAS.modeCard, ALIAS.modeCardOn) : ALIAS.modeCard,
                 // 用 aria-disabled 而不是 disabled：项目里所有按钮都保留键盘焦点，
                 // 真正挡住重复点击的是 switchTier 里的 tierBusy 判断。
                 "aria-disabled": tierBusy ? "true" : undefined,
                 "aria-pressed": tier === "recommended" ? "true" : "false",
                 onClick: () => { requestTier("recommended") },
-              }, T.modeRecommended),
+              },
+                h("strong", { style: ALIAS.modeCardTitle }, T.modeRecommended),
+                h("span", { style: ALIAS.modeCardSub }, T.modeRecommendedShort)),
               h("button", {
                 type: "button",
-                style: tier === "unrestricted" ? merge(ALIAS.modeBtn, ALIAS.modeBtnActive) : ALIAS.modeBtn,
+                style: tier === "unrestricted" ? merge(ALIAS.modeCard, ALIAS.modeCardOn) : ALIAS.modeCard,
                 "aria-disabled": tierBusy ? "true" : undefined,
                 "aria-pressed": tier === "unrestricted" ? "true" : "false",
                 onClick: () => { requestTier("unrestricted") },
-              }, T.modeUnrestricted)),
+              },
+                h("strong", { style: ALIAS.modeCardTitle }, T.modeUnrestricted),
+                h("span", { style: ALIAS.modeCardSub }, T.modeUnrestrictedShort))),
             h("p", { style: ALIAS.desc }, T.dockModeHint),
             pendingTier !== null
               ? h("div", { style: ALIAS.warnBox },
@@ -6238,13 +6579,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("button", { type: "button", style: ALIAS.confirmBtn, "aria-label": T.cancel, onClick: () => { setPendingTier(null) } }, T.cancel))
               : null,
             pendingTier !== null ? h("p", { style: ALIAS.foot }, T.confirmModeBody) : null,
-            tierFailed ? h("p", { style: ALIAS.fail }, T.dockTierFailed) : null,
+            tierFailed ? h("p", { style: ALIAS.fail }, T.dockTierFailed) : null),
 
-            h("div", { style: ALIAS.divider }),
-
-            // 目标词表轻量管理
+            // 第二节：目标词表轻量管理
+            h("div", { className: "dock-section", style: ALIAS.section },
             h("div", { style: ALIAS.head },
-              h("div", { style: ALIAS.subhead }, T.aliasTitle),
+              h("h4", { style: ALIAS.subhead }, T.aliasTitle),
               h("button", {
                 type: "button",
                 style: merge(ALIAS.remove, { color: tk.accent, cursor: "pointer", padding: "0 4px" }),
@@ -6309,15 +6649,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             canAdd || (from === "" && to === "")
               ? null
               : h("p", { style: ALIAS.fail }, inputErrors.from || inputErrors.to || inputErrors.limit),
-            navHint ? h("p", { style: ALIAS.foot }, T.wordsNavHint) : null,
-            h("div", { style: ALIAS.divider }),
-            h("div", { style: merge(ALIAS.head, { marginTop: 4, alignItems: "center" }) },
+            navHint ? h("p", { style: ALIAS.foot }, T.wordsNavHint) : null)),
+            // 页脚在滚动区之外：正文多长都压不到它。
+            h("div", { className: "dock-footer", style: ALIAS.footer },
               h("p", { style: ALIAS.foot }, T.dockFooterHint),
               h("button", {
                 type: "button",
                 style: ALIAS.add,
                 onClick: openSettings,
-              }, T.dockOpenSettings))),
+              }, T.dockOpenSettings)),
             // 右下角缩放：拖手柄只改尺寸，位置不动。
             h("div", { style: ALIAS.grip, onPointerDown: (event) => { startGesture(event, "resize") } }, "\u25E2"))
         : null)
@@ -6353,6 +6693,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 判定（草稿脏判定、词条校验、覆盖/合并判定、保存后的草稿回收），要么是必须与
   // host/masks.js 语义一致的本地预览，要么是「读取失败禁止覆盖」这类渲染约束。
   exports.isRuleEditDirty = isRuleEditDirty
+  exports.aliasReadError = aliasReadError
   exports.maskPreview = maskPreview
   exports.normalizeAliasEntries = normalizeAliasEntries
   exports.aliasNextEntries = aliasNextEntries
@@ -6366,6 +6707,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   exports.PromptBlock = PromptBlock
   exports.WordEditor = WordEditor
   exports.Dialog = Dialog
+  exports.Toast = Toast
+  exports.Announcer = Announcer
+  exports.Tag = Tag
   exports.Button = Button
   exports.Icon = Icon
   exports.Term = Term
