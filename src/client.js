@@ -573,6 +573,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     // 弹窗的遮罩只能走样式表：内联样式写不出 ::backdrop。
     ".bkl-root .bkl-dialog::backdrop { background: color-mix(in srgb, #000 48%, transparent); }",
     ".bkl-root .bkl-dialog[open] { animation: bkl-pop 160ms cubic-bezier(0.16, 1, 0.3, 1); }",
+    // 开关轨道与滑块退出宿主的全局超椭圆，照 ui-primitives/Switch 显式写成 round。
+    // 不写这一条会继承 superellipse(1.5)，滑块会比方圆，与宿主的 superellipse(1) 不同。
+    ".bkl-root .bkl-switch, .bkl-root .bkl-knob { corner-shape: round; }",
     ".bkl-root .bkl-btn, .bkl-root .bkl-tab, .bkl-root .bkl-hover, .bkl-root .bkl-radio, .bkl-root .bkl-switch { transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, box-shadow 120ms ease; }",
     ".bkl-root .bkl-btn-plain:not([aria-disabled=\"true\"]):hover, .bkl-root .bkl-hover:hover { background-color: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)) !important; }",
     ".bkl-root .bkl-btn-fill:not([aria-disabled=\"true\"]):hover { opacity: 0.90; filter: brightness(1.05); }",

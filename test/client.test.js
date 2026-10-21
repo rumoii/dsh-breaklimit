@@ -1480,7 +1480,7 @@ test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
 
 test('开关与勾选框照宿主 ui-primitives 的尺寸和取色', () => {
   const { exported } = loadClient()
-  const { Switch, S } = exported
+  const { Switch, S, SCOPED_CSS } = exported
 
   // 轨道 36×20、未选中用 border-l3、选中用品牌色——与宿主 Switch.module.css 一致。
   const offSwitch = Switch({ on: false, onToggle() {} })
@@ -1496,6 +1496,10 @@ test('开关与勾选框照宿主 ui-primitives 的尺寸和取色', () => {
   assert.equal(onSwitch.props.style.background.includes('brand-primary'), true, '选中轨道应取品牌色')
   const onKnob = findAll(onSwitch, n => n.props?.className === 'bkl-knob')[0]
   assert.equal(onKnob.props.style.transform, 'translateX(16px)', '滑块右移距离应为 16px')
+
+  // 轨道与滑块要退出宿主的全局超椭圆：不写这条会继承 superellipse(1.5)，比方圆，
+  // 宿主的 Switch 显式写了 round（计算为 superellipse(1)）。
+  assert.equal(SCOPED_CSS.includes('.bkl-root .bkl-switch, .bkl-root .bkl-knob { corner-shape: round; }'), true, '开关轨道与滑块应退出全局超椭圆')
 
   // 勾选框：16×16 且用品牌色强调，不用浏览器默认蓝。
   assert.equal(S.ackInput.width, '16px', '勾选框应为 16px')
