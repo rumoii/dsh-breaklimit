@@ -12,6 +12,17 @@
 
 **[快速安装](#快速安装windows-powershell)** · [安装、升级与排错](docs/install.md) · [命令与 HTTP 接口](docs/reference.md) · [免责声明](DISCLAIMER.md) · [变更记录](CHANGELOG.md)
 
+<p align="center">
+  <a href="https://github.com/paralcor">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/paralcor-horizontal-dark.png">
+      <img alt="PARALCOR" src="docs/images/brand/paralcor-horizontal-light.png" width="120">
+    </picture>
+  </a>
+  <br>
+  <sub>DSH 破限由 @rumoii 开发维护，纳入帕拉珂 / PARALCOR 品牌展示。</sub>
+</p>
+
 </div>
 
 当前版本 **0.9.4，内测版**。发布产物和验证边界见 [Releases](https://github.com/rumoii/dsh-breaklimit/releases)；正式版计划为 1.0.0。
