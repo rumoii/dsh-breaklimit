@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 并发冲突状态码与契约对齐：规则锁占用（locked）与清单版本冲突（conflict）改报 409，与 docs/reference 承诺一致，调用方可把「并发重试」与「输入错误」分开；状态码段改写为明确的 code 清单，500 收窄到真内部失败。状态报告档位诚实化：新增 `modeSource` 归因字段，没探测到会话时徽章显示「档位未探测」而非把部署默认档当会话档展示；宿主 permissionPresets.defaultPreset 抛错降级为 null，不再把整个 GET /status 打成 500。
+- 补丁事务层：旧格式记录（无 declarations）升级后首次切档一次成功，不再逐目标吃「写入失败→回滚」；回滚成功的事务把 manifest 落成 rolled-back 并纳入清理，快照不再永久堆积（state.json 引用的目录永不删）。原子写补 fsync：临时文件落盘后改名、改名后尽力 fsync 目录（Windows 跳过目录一步），「要么完整落盘要么不存在」的承诺落到实处。
+- 偏好写入互斥：update.json 与补丁开关的读-改-写进跨进程锁（与补丁事务、规则写入同一把 operation.lock），多进程共享 DSH_HOME 不再丢字段/丢切换；锁被占用不排队、按既有失败形状报出。
+
 - HTTP 失败路径脱敏收紧：含空格的绝对路径整段脱敏（此前只脱到第一个空格、反而泄露更多），POSIX 根补 `/mnt`、`/data`、`/Volumes`；词库写失败、规则保存/激活失败的文案与 `/patches/enabled` 的错误全面过脱敏，其中写盘故障改报 500 `write_failed`，不再误报 400 `unknown_patch`。`GET /breaklimit/rules/status` 新增 `pendingActivation` 诊断字段；删除保留归属的文案改为与实际可达路径一致；`POST /breaklimit/restart` 的可粘贴重启命令声明为脱敏层唯一例外。
 - 提示词兜底段落点修正：组合缺少 persona 前缀段时补的 breaklimit:head 此前被 push 到提示词最末（装配结果的段对象没有 order 字段，按序号找插入点恒失配），注入在该分支下形同虚设；现按数组下标插到提示词之首，测试夹具改用宿主真实段形状并加正常路径逐字节护栏。
 - 规则域数据正确性：落点写入哈希（`landing.writtenHash`）持久化，比对基线不再用活正文——同步失败一次后保存可恢复、撤销不再永久误判；孤儿快照在被新快照替换前先搬保留副本；激活中改 target 保存时报实际写入落点且 `landingMoved` 反映事实；激活提交遇清单冲突时按归属回滚或如实报出当前状态；索引格式向后兼容，旧记录读写不受影响。
