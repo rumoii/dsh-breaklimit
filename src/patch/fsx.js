@@ -3,6 +3,9 @@
 // 原子写入用同目录临时文件加改名。改名在同一文件系统上是原子的，所以任何
 // 时刻读到的要么是完整旧内容，要么是完整新内容——不会出现被截断的目标文件。
 // 直接覆写会留下一个中间态窗口，而写坏的正是一个正在被宿主加载的文件。
+// 断电下要守住同样的承诺，光有改名不够：临时文件写完先 fsync 再改名，改名后
+// 尽力 fsync 目录（POSIX）；Windows 没有可 fsync 的目录句柄，跳过目录这一步，
+// 改名本身的持久性由 NTFS 日志与同卷改名语义兜底。
 //
 // 读取分两档：`readTextOrNull` 把一切读失败压成 null，只给「读不到就没有」安全的
 // 展示场景用；`readBytesStrict` 区分「文件不存在」与「存在但读不到」，凡是要据读取
@@ -30,6 +33,10 @@ function writeAtomic(file, content) {
   const temp = path.join(dir, `.${path.basename(file)}.bkl-${process.pid.toString(36)}-${Date.now().toString(36)}.tmp`)
   try {
     fs.writeFileSync(temp, content)
+    // 改名只保证目录项切换是原子的，不保证内容已经落盘：断电时新名字可能指向
+    // 一个没写完的文件。临时文件写完先 fsync 再改名，「要么完整落盘要么完全
+    // 不存在」才在断电下也成立。
+    fsyncFile(temp)
     fs.renameSync(temp, file)
   } catch (error) {
     try {
@@ -38,6 +45,48 @@ function writeAtomic(file, content) {
       // 清理失败不影响原始错误：原始错误才是调用方需要看到的那一个。
     }
     throw error
+  }
+  // 改名本身也要落盘才算数。这一步发生在改名成功之后，失败不影响已完成的写入，
+  // 不重新抛出。
+  fsyncDirBestEffort(dir)
+}
+
+/** fsync 单个文件，让写入的内容在改名前落盘。失败向上抛，由调用方清临时文件。 */
+function fsyncFile(file) {
+  // 句柄必须可写：Windows 对只读句柄的 fsync 报 EPERM，刚写完的临时文件用 r+ 打开。
+  const fd = fs.openSync(file, 'r+')
+  try {
+    fs.fsyncSync(fd)
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // 关不掉句柄不改变「内容已经 fsync」这件事，也不该盖掉更早的错误。
+    }
+  }
+}
+
+/**
+ * 目录 fsync，尽力而为：失败不抛。POSIX 上能拿目录句柄就做；Windows 打不开
+ * 目录句柄（fs.openSync 对目录报 EPERM/EISDIR），跳过，改名的持久性由 NTFS
+ * 日志与同卷改名语义兜底。
+ */
+function fsyncDirBestEffort(dir) {
+  if (process.platform === 'win32') return
+  let fd = null
+  try {
+    fd = fs.openSync(dir, 'r')
+    fs.fsyncSync(fd)
+  } catch {
+    // 尽力而为：拿不到目录句柄或文件系统不支持时跳过。
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // 清理失败不影响已落盘的内容。
+      }
+    }
   }
 }
 

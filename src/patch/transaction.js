@@ -145,7 +145,19 @@ function allTargetsAtBefore(root, files) {
  */
 function settleAfterRollback(home, root, { operationId, dir, files, rollbackErrors }) {
   if (rollbackErrors.length === 0 && allTargetsAtBefore(root, files)) {
+    // 回滚成功的目录不再承担恢复职责（每个目标都回到了 before），把 manifest 落成
+    // rolled-back——它是 prune 认得出「可收走」的唯一凭据。先落 phase 再删清单：
+    // 两步之间崩溃时 state 仍指着这个目录，prune 的指针守卫会保住它。
+    markManifestPhase(dir, 'rolled-back')
     removeState(home)
+    // 顺手收走先前失败留下的 rolled-back 目录；本次这个用 protect 豁免，作为刚发生
+    // 的失败现场留一次，下一次成功收尾或显式 prune 再清。清理尽力而为：失败不致命，
+    // prune 返回的清单只含真正删掉的目录，删不掉的留在原地，不谎报。
+    try {
+      pruneTransactions(home, 10, dir)
+    } catch {
+      // 清理失败不改变「已回滚」这个结果。
+    }
     return { statePreserved: false, phase: 'rolled-back' }
   }
   try {
@@ -293,10 +305,13 @@ export function applyPatches({
     // 预检会把它们判成宿主偏离声明版本，整批阻断。
     // 继承要拿得出证据：旧记录的 after 必须等于该文件此刻的内容。
     const inherited = []
+    const inheritedNow = new Set()
     const released = []
     if (loaded.kind === 'ok') {
       for (const [target, record] of Object.entries(loaded.state.files)) {
-        if (files[target] !== undefined) continue
+        // 这里不再守「files 里已有就跳过」：收集发生在记账之前，files 必然还是空的，
+        // 那样的守卫是死代码。与本批撞车的目标（旧记录判 needs_reapply 的那批）在
+        // 下面的继承循环里处理，覆盖是有意的，升级发生在提交成功之后。
         const current = readFile(path.join(root, target))
         if (current === null || hashText(current) !== record.after) {
           // 文件已被外部改动，不再归我们管——不把别人的改动记成自己的。
@@ -336,12 +351,21 @@ export function applyPatches({
           continue
         }
         writeFile(snapshotPath(dir, target), snapshot)
-        files[target] = record
+        // 连本批刚写下的记录一起覆盖是故意的。旧记录（after 是旧档内容）配这份原文
+        // 快照，恰好是「写入中途失败→回滚之后还能续做」的状态：旧档内容判
+        // needs_reapply、原文判待应用，重试与回退都判得下去。写入全部完成后、提交前
+        // 被硬杀的窗口仍两头都判不出来，只能靠 tools/rebuild-state.mjs 恢复——那是
+        // 既有形态，这里不解决。旧记录升级成这一批的版本（after 换成写下的哈希、
+        // 补上声明指纹）要等提交成功之后，见 committedFiles——提前升级，失败后的
+        // 混合状态（有的文件已回原文、有的还停在旧档）两头都判不出来。
+        // before 缺失的旧记录按快照补上：回退恢复的就是快照字节，账本必须兑现它。
+        files[target] = record.before === undefined ? { ...record, before: hashText(snapshot) } : record
+        inheritedNow.add(target)
       }
       atomicWrite(path.join(dir, 'manifest.json'), `${JSON.stringify({
         operationId,
         // 先记 pending：同一份 phase 也进清理判据，失败现场因此不会被当成垃圾。
-        // 成功提交后再由 markManifestCommitted 改成 committed。
+        // 成功提交后再由 markManifestPhase 改成 committed。
         phase: 'pending',
         startedAt: new Date().toISOString(),
         dsh: DSH_TARGET,
@@ -367,9 +391,11 @@ export function applyPatches({
       for (const [target, change] of result.changes) {
         writeFile(path.join(root, target), change.after)
         written.push(target)
-        // 复校验：写完立刻读回，确认磁盘上的内容确实是我们要写的那一份。
+        // 复校验：写完立刻读回，确认磁盘上的内容确实是我们要写的那一份。比对对象是
+        // 这一批写下的哈希，不是 files[target].after——被继承的旧记录要到提交时刻才
+        // 升级，拿旧档哈希比对会让复校验必然失败，一次升级连吃几轮「失败+回滚」。
         const back = readTextOrNull(path.join(root, target))
-        if (back === null || hashText(back) !== files[target].after) {
+        if (back === null || hashText(back) !== hashText(change.after)) {
           throw new Error(`写入后复校验失败：${target}`)
         }
       }
@@ -392,8 +418,22 @@ export function applyPatches({
       }
     }
 
+    // 提交成功才升级被继承的旧记录：after 换成这一批真正写下的哈希、补上本批声明
+    // 指纹。before 与快照沿旧记录的原文不动——回退要回到的是原文，不是旧档中间态。
+    const committedFiles = { ...files }
+    for (const target of inheritedNow) {
+      const change = result.changes.get(target)
+      if (change === undefined) continue
+      const declared = declarationsByTarget.get(target)
+      committedFiles[target] = {
+        before: files[target].before,
+        after: hashText(change.after),
+        ...(declared === undefined ? {} : { declarations: declared }),
+      }
+    }
+
     try {
-      commitState(home, { operationId, dir, files, phase: 'committed' })
+      commitState(home, { operationId, dir, files: committedFiles, phase: 'committed' })
     } catch (error) {
       // 目标文件已经改了，却写不下状态记录——下一次 Revert 会说「没有记录」。
       // 这时唯一能保持磁盘一致的做法是把文件也退回去，并如实报告。
@@ -418,13 +458,13 @@ export function applyPatches({
     // 记录已 committed，历史快照不再承担恢复职责，此时才清理。`dir` 额外豁免：
     // 它就是刚才那份快照的来源，即便 keep 很小也不该被自己的清理扫掉。
     // 先把 manifest 的 phase 落成 committed，否则按保守清理规则它永远删不掉。
-    markManifestCommitted(dir)
+    markManifestPhase(dir, 'committed', committedFiles)
     pruneTransactions(home, 10, dir)
 
     return {
       ok: true,
       code: 'applied',
-      message: `已应用补丁，写入 ${String(written.length)} 个文件，记录中共 ${String(Object.keys(files).length)} 个。`
+      message: `已应用补丁，写入 ${String(written.length)} 个文件，记录中共 ${String(Object.keys(committedFiles).length)} 个。`
         + (released.length > 0
           ? ` ${String(released.length)} 个文件已被外部改动，不再计入记录。`
           : ''),
@@ -703,7 +743,7 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
     removeState(home)
     // 回退已完成、清单已清，备份目录退回历史证据的身份，按上限收拢。
     // 同样先把 phase 落成 committed，让它可以进入清理范围。
-    markManifestCommitted(backupDir)
+    markManifestPhase(backupDir, 'committed')
     pruneTransactions(home, 10, backupDir)
     return {
       ok: true,
@@ -738,23 +778,28 @@ function manifestPhase(dir) {
 }
 
 /**
- * 成功收尾后把 manifest 的 phase 改成 committed。
+ * 收尾后改写事务 manifest：换 phase，需要时同步 files。
  *
  * 事务目录里的 manifest 起手写的是 pending / reverting，那是「随时可能中断」时的标记。
- * 清理只删 committed，所以成功路径必须把这份标记落成 committed，否则真实目录永远不会
- * 被收拢，备份会无限增长。这一步失败只影响该目录能否被清理，不能让已经成功的事务报错，
- * 所以吞掉异常——目录留着，多占一点磁盘而已。
+ * 清理按 phase 认「可收走」：成功收尾落成 committed，回滚成功落成 rolled-back；不落，
+ * 真实目录永远不会被收拢，备份会无限增长。files 同步只在成功收尾时做：提交时刻升级过
+ * 的旧记录必须与 state.json 一致，manifest 停在 pending 时刻的形状就是一份假记录。
+ * 这一步失败只影响该目录能否被清理，不能让已经成功的事务报错，所以吞掉异常——
+ * 目录留着，多占一点磁盘而已。
  *
  * @param {string} dir - 事务目录绝对路径。
+ * @param {string} phase - 落盘的 phase。
+ * @param {object} [files] - 同步进 manifest 的文件记录；缺省不动原有内容。
  */
-function markManifestCommitted(dir) {
+function markManifestPhase(dir, phase, files) {
   const file = path.join(dir, 'manifest.json')
   try {
     const raw = readTextOrNull(file)
     if (raw === null) return
     const parsed = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return
-    parsed.phase = 'committed'
+    parsed.phase = phase
+    if (files !== undefined) parsed.files = files
     atomicWrite(file, `${JSON.stringify(parsed, null, 2)}\n`)
   } catch {
     // 清理豁免：不影响主流程，也不谎报成功。
@@ -762,23 +807,30 @@ function markManifestCommitted(dir) {
 }
 
 /**
- * 清理超出保留数量的历史事务目录，避免备份无限增长。
+ * 清理历史事务目录，避免备份无限增长。
  *
- * 只在成功路径调用：失败路径留下的 pending / rollback-failed 目录可能正是
- * `--revert` 与 `tools/rebuild-state.mjs` 的依据，当垃圾扫掉就等于毁掉恢复凭证。
- * 所以清理不按目录名一刀切：先读目录里 manifest.json 的 phase，只删 committed。
+ * 成功路径与回滚成功的收尾都调用它。失败现场留下的 pending / rollback-failed /
+ * reverting 目录可能正是 `--revert` 与 `tools/rebuild-state.mjs` 的依据，当垃圾扫掉
+ * 就等于毁掉恢复凭证，所以清理不按目录名一刀切：先读目录里 manifest.json 的 phase，
+ * 只删 committed 与 rolled-back 两类。
+ *
+ * rolled-back 是已了结的失败现场：回滚把每个目标都送回了 before，目录里没有任何
+ * 恢复职责，见到就清、不占保留名额——否则每次「写入失败→回滚成功」都留一个永不
+ * 收走的快照目录。committed 仍按 `keep` 收拢：它们可能是 tools/rebuild-state.mjs
+ * 的原文来源。
  *
  * 读不到 manifest 就不删：文件缺失、不是合法 JSON、顶层不是对象、没有 phase 字段，
  * 一律按「证据不足」跳过。这些目录最可能就是失败现场，留着只多占一点磁盘，删错
- * 了就没有下一次恢复可言。
+ * 了就没有下一次恢复可言。state.json 指着的目录无论 phase 是什么都不删：它是当前
+ * 恢复的唯一依据。
  *
- * `keep` 是总数上限；`protect` 指定的目录额外豁免，因为它可能正是 state.json
- * 指向的那一份快照来源。两个参数合起来保证「清理之后仍能回退」。
+ * `keep` 是 committed 的保留名额；`protect` 指定的目录额外豁免，因为它可能正是
+ * state.json 指向的那一份快照来源。合起来保证「清理之后仍能回退」。
  *
  * @param {string} home - DSH_HOME。
  * @param {number} [keep] - 期望保留的最新事务目录数量。
  * @param {string | null} [protect] - 无论新旧都要保留的目录绝对路径。
- * @returns {string[]} 被删除的目录名。
+ * @returns {string[]} 被真正删除的目录名；删除失败的不在其中，留在原地不谎报。
  */
 export function pruneTransactions(home, keep = 10, protect = null) {
   const dir = transactionsDir(home)
@@ -789,6 +841,13 @@ export function pruneTransactions(home, keep = 10, protect = null) {
     return []
   }
   const protectedName = typeof protect === 'string' ? path.basename(protect) : null
+  // 指针守卫：被 state.json 引用的目录是当前恢复的依据，删了就没有下一次恢复可言。
+  // 清单损坏时拿不到指针，只能按「没有引用」处理——那种状态本就让 apply/revert 全部
+  // 停手，不会走到依赖这层守卫的清理。
+  const loaded = readState(home)
+  const referencedName = loaded.kind === 'ok' && typeof loaded.state.transaction === 'string'
+    ? path.basename(loaded.state.transaction)
+    : null
   const sorted = entries
     .filter((name) => {
       try {
@@ -798,17 +857,25 @@ export function pruneTransactions(home, keep = 10, protect = null) {
       }
     })
     .sort()
-  // 事务 id 以时间戳开头，字典序即时间序。先取最新 keep 个，再补进受保护目录。
-  const survivors = new Set(sorted.slice(-Math.max(1, keep)))
+  // 事务 id 以时间戳开头，字典序即时间序。keep 窗口只算 committed：rolled-back
+  // 见到就清、不占名额，否则失败目录会把重建证据（committed）挤出窗口。
+  const phases = new Map(sorted.map(name => [name, manifestPhase(transactionDir(home, name))]))
+  const committedNames = sorted.filter(name => phases.get(name) === 'committed')
+  const survivors = new Set(committedNames.slice(-Math.max(1, keep)))
   if (protectedName !== null) survivors.add(protectedName)
-  // 上限只对 committed 生效。读不出 phase 的一律留在原地：失败凭证比目录整洁重要。
-  const dropped = sorted.filter((name) => {
-    if (survivors.has(name)) return false
-    return manifestPhase(transactionDir(home, name)) === 'committed'
+  const droppable = sorted.filter((name) => {
+    if (name === protectedName || name === referencedName) return false
+    const phase = phases.get(name)
+    if (phase === 'rolled-back') return true
+    // 上限只对 committed 生效。读不出 phase 的一律留在原地：失败凭证比目录整洁重要。
+    return phase === 'committed' && !survivors.has(name)
   })
-  for (const name of dropped) {
+  // 返回的清单只含真正删掉的目录：删除失败的不报成已清理。
+  const dropped = []
+  for (const name of droppable) {
     try {
       fs.rmSync(transactionDir(home, name), { recursive: true, force: true })
+      dropped.push(name)
     } catch {
       // 清理是尽力而为的维护动作，失败不该影响主流程。
     }

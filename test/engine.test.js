@@ -12,7 +12,7 @@ import test from 'node:test'
 
 import { atomicWrite, hashText } from '../src/patch/fsx.js'
 import { createLock } from '../src/patch/lock.js'
-import { countOccurrences, preflight } from '../src/patch/preflight.js'
+import { countOccurrences, declarationFingerprint, preflight } from '../src/patch/preflight.js'
 import { applyPatches, pruneTransactions, revertPatches } from '../src/patch/transaction.js'
 import { transactionsDir } from '../src/patch/state.js'
 import { PATCHES } from '../src/patch/index.js'
@@ -770,4 +770,198 @@ test('自定义声明集：另一档写下的内容不算已应用，按当前�
   assert.equal(result.findings[0].state, 'needs_reapply')
   assert.equal(result.code, 'applied')
   assert.equal(read(root, 'a.txt'), pristine.split('A1').join('A2'))
+})
+
+// 旧格式记录（没有 declarations 指纹）的升级切档。
+//
+// 夹具制造法沿用上一例：目标带全档 afterByMode，变体才还原得出原文。但 state.json
+// 必须带 before、transaction 指针与快照——只有这样才走继承循环，也就是升级切档
+// 连吃「失败+回滚」的那条路径。
+function legacyUpgradeFixture(root, home, items) {
+  const legacyName = '20260101T000000-aa'
+  const legacyDir = path.join(home, 'breaklimit', 'transactions', legacyName)
+  fs.mkdirSync(path.join(legacyDir, 'files'), { recursive: true })
+  const legacyRecords = {}
+  for (const item of items) {
+    const pristine = `head\n${item.before}\ntail\n`
+    const oldTier = pristine.split(item.before).join(item.recommended)
+    write(root, item.path, oldTier)
+    fs.writeFileSync(path.join(legacyDir, 'files', item.path), pristine, 'utf8')
+    legacyRecords[item.path] = { before: hashText(pristine), after: hashText(oldTier) }
+  }
+  fs.writeFileSync(path.join(legacyDir, 'manifest.json'), JSON.stringify({
+    operationId: legacyName,
+    files: legacyRecords,
+    phase: 'committed',
+  }), 'utf8')
+  fs.mkdirSync(path.join(home, 'breaklimit'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'breaklimit', 'state.json'), JSON.stringify({
+    version: 1,
+    operationId: legacyName,
+    phase: 'committed',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    transaction: legacyDir,
+    files: legacyRecords,
+  }), 'utf8')
+}
+
+/** 切到 unrestricted 档的本批声明：after 已按档解析，afterByMode 保留全档变体。 */
+function tierSwitchPatches(items) {
+  return items.map(item => ({
+    id: item.id,
+    title: '测试补丁',
+    kind: 'replace',
+    targets: [{
+      path: item.path,
+      before: item.before,
+      after: item.unrestricted,
+      afterByMode: { recommended: item.recommended, unrestricted: item.unrestricted },
+      expectHits: 1,
+    }],
+  }))
+}
+
+/** 预哈希必须是原文的：磁盘上是旧档内容，按现状算等于把旧档当原文。 */
+function tierSwitchHashes(items) {
+  const hashes = {}
+  for (const item of items) hashes[item.id] = { [item.path]: hashText(`head\n${item.before}\ntail\n`) }
+  return hashes
+}
+
+const TIER_ITEMS = [
+  { path: 'a.txt', id: 'T-A', before: 'A1', recommended: 'A2', unrestricted: 'A3' },
+  { path: 'b.txt', id: 'T-B', before: 'B1', recommended: 'B2', unrestricted: 'B3' },
+]
+
+test('旧格式记录升级后首次切档一次成功，不出现失败+回滚', () => {
+  const root = tempDir()
+  const home = tempDir()
+  legacyUpgradeFixture(root, home, TIER_ITEMS)
+  const patches = tierSwitchPatches(TIER_ITEMS)
+  const hashes = tierSwitchHashes(TIER_ITEMS)
+
+  const result = apply(root, home, patches, { hashes })
+
+  // 一次成功。旧代码在这里是「写入后复校验失败→回滚」：每个旧格式记录的目标都要
+  // 连吃几轮失败+回滚才最终应用。
+  assert.equal(result.ok, true)
+  assert.equal(result.code, 'applied')
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.written.sort(), ['a.txt', 'b.txt'])
+  assert.deepEqual(result.findings.map(item => item.state), ['needs_reapply', 'needs_reapply'])
+  for (const item of TIER_ITEMS) {
+    assert.equal(read(root, item.path), `head\n${item.before}\ntail\n`.split(item.before).join(item.unrestricted))
+  }
+
+  // 记录完成升级：after 是这一批真正写下的哈希、declarations 补上本批声明指纹；
+  // before 与快照仍是原文——回退要回到原文，不是旧档中间态。
+  const state = JSON.parse(read(home, 'breaklimit/state.json'))
+  assert.equal(state.phase, 'committed')
+  for (const item of TIER_ITEMS) {
+    const pristine = `head\n${item.before}\ntail\n`
+    const record = state.files[item.path]
+    assert.equal(record.before, hashText(pristine))
+    assert.equal(record.after, hashText(pristine.split(item.before).join(item.unrestricted)))
+    const [patch] = patches.filter(one => one.id === item.id)
+    assert.deepEqual(record.declarations, [declarationFingerprint(item.id, patch.targets[0])])
+    assert.equal(fs.readFileSync(path.join(state.transaction, 'files', item.path), 'utf8'), pristine)
+  }
+  // 只留下旧事务目录与这一次成功的目录。
+  assert.equal(fs.readdirSync(transactionsDir(home)).length, 2)
+
+  // 可重复应用契约不弱化：重复应用报已应用；回退回到原文；回退后还能重新应用。
+  assert.equal(apply(root, home, patches, { hashes }).code, 'already_applied')
+  const back = revertPatches({ root, home, lock: createLock() })
+  assert.equal(back.ok, true)
+  for (const item of TIER_ITEMS) assert.equal(read(root, item.path), `head\n${item.before}\ntail\n`)
+  assert.equal(apply(root, home, patches, { hashes }).code, 'applied')
+})
+
+test('切档重写中途失败可续做：回滚回原文后重试一次成功', () => {
+  const root = tempDir()
+  const home = tempDir()
+  legacyUpgradeFixture(root, home, TIER_ITEMS)
+  const patches = tierSwitchPatches(TIER_ITEMS)
+  const hashes = tierSwitchHashes(TIER_ITEMS)
+  const newB = `head\nB1\ntail\n`.split('B1').join('B3')
+
+  // 只让 b.txt 的新档写入失败；快照与回滚写入照常。
+  const failing = (file, content) => {
+    if (file === path.join(root, 'b.txt') && content === newB) throw new Error('模拟写入失败')
+    atomicWrite(file, content)
+  }
+
+  const result = apply(root, home, patches, { hashes, writeFile: failing })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'apply_failed')
+  assert.match(result.error, /模拟写入失败/)
+  assert.deepEqual(result.rollbackErrors, [])
+  assert.equal(result.phase, 'rollback-failed')
+  // 已写的回滚回原文，没写的保持原样。
+  assert.equal(read(root, 'a.txt'), 'head\nA1\ntail\n')
+  assert.equal(read(root, 'b.txt'), 'head\nB2\ntail\n')
+
+  // 失败现场可续做：不先回退、不重建记录，重试一次就成功。
+  const retry = apply(root, home, patches, { hashes })
+  assert.equal(retry.ok, true)
+  assert.equal(retry.code, 'applied')
+  assert.deepEqual(retry.written.sort(), ['a.txt', 'b.txt'])
+  for (const item of TIER_ITEMS) {
+    assert.equal(read(root, item.path), `head\n${item.before}\ntail\n`.split(item.before).join(item.unrestricted))
+  }
+
+  const back = revertPatches({ root, home, lock: createLock() })
+  assert.equal(back.ok, true)
+  for (const item of TIER_ITEMS) assert.equal(read(root, item.path), `head\n${item.before}\ntail\n`)
+})
+
+test('回滚成功把事务 manifest 落成 rolled-back，prune 可清掉不再引用的目录', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', 'VALUE = 2000\n')
+  const patches = [replacePatch([{ path: 'a.txt', before: 'VALUE = 2000', after: 'VALUE = 20000', expectHits: 1 }])]
+
+  // 只拒绝目标文件的写入：快照与清单照常落盘，事务走到写入阶段才失败，
+  // 回滚才有东西可回、收尾才有 manifest 可改。
+  const failing = (file, content) => {
+    if (file === path.join(root, 'a.txt')) throw new Error('模拟写入失败')
+    atomicWrite(file, content)
+  }
+  const result = apply(root, home, patches, { writeFile: failing })
+  assert.equal(result.code, 'apply_failed')
+  assert.equal(fs.existsSync(path.join(home, 'breaklimit', 'state.json')), false)
+
+  // 回滚成功的目录不再承担恢复职责，manifest 必须落成 rolled-back——它是 prune
+  // 认得出「可收走」的唯一凭据。
+  const txnRoot = transactionsDir(home)
+  const [name] = fs.readdirSync(txnRoot)
+  const manifest = JSON.parse(read(home, path.join('breaklimit', 'transactions', name, 'manifest.json')))
+  assert.equal(manifest.phase, 'rolled-back')
+
+  const dropped = pruneTransactions(home, 10)
+  assert.deepEqual(dropped, [name])
+  assert.equal(fs.existsSync(path.join(txnRoot, name)), false)
+})
+
+test('prune 不清仍被 state.json 引用的事务目录，其余 rolled-back 的照清', () => {
+  const home = tempDir()
+  const referenced = seedTransactionDir(home, '20260101T000001-aa', 'rolled-back')
+  seedTransactionDir(home, '20260101T000002-aa', 'rolled-back')
+  const orphan = seedTransactionDir(home, '20260101T000003-aa', 'rolled-back')
+  fs.mkdirSync(path.join(home, 'breaklimit'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'breaklimit', 'state.json'), JSON.stringify({
+    version: 1,
+    operationId: '20260101T000001-aa',
+    phase: 'rollback-failed',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    transaction: referenced,
+    files: { 'a.txt': { before: 'sha256:aa', after: 'sha256:bb' } },
+  }), 'utf8')
+
+  const dropped = pruneTransactions(home, 10)
+
+  assert.deepEqual(dropped.sort(), ['20260101T000002-aa', '20260101T000003-aa'])
+  assert.equal(fs.existsSync(referenced), true, 'state.transaction 指着的目录不许删')
+  assert.equal(fs.existsSync(orphan), false)
 })
