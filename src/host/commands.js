@@ -42,7 +42,7 @@ export function registerCommands(ctx, config, runtime) {
             return { kind: 'error', text: `非法档位 "${targetTier}"。可用：${tiers.TIERS.join(', ')}。` }
           }
           tiers.writeTier(home, targetTier)
-          void applyModeBudget(ctx, readMode(home))
+          void applyModeBudget(ctx, readMode(home), resolveBudgets(config))
           return { kind: 'success', text: `提示词模式已切换至 "${targetTier}"；可即时生效的上限已重设，源码补丁仍需回退并重新应用。` }
         }
         if (action === 'doctor') {
@@ -119,9 +119,12 @@ export function registerCommands(ctx, config, runtime) {
         if (action === 'activate') {
           const done = rules.activateRule(home, argument)
           if (!done.ok) return { kind: 'error', text: done.reason }
+          const copied = typeof done.externalCopy === 'string'
+            ? `落点上的外部改动已存副本 ${done.externalCopy}。`
+            : ''
           return {
             kind: 'success',
-            text: `已激活「${done.name}」，正文写入 ${done.file}。宿主会在工作区指令里读到它，同时它也直接注入系统提示。`,
+            text: `已激活「${done.name}」，正文写入 ${done.file}。${copied}宿主会在工作区指令里读到它，同时它也直接注入系统提示。`,
           }
         }
 

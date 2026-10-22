@@ -12,7 +12,7 @@ import { userInjectPath, maxInjectBytes, readInject } from '../context/inject-fi
 import { resolveHostRoot } from '../host/host-root.js'
 import { buildStatus, savedMessage } from '../host/status.js'
 import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
-import { applyModeBudget } from '../host/capabilities.js'
+import { applyModeBudget, resolveBudgets } from '../host/capabilities.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { readMasks, writeMasks, masksPath, MAX_MASKS, MAX_MASK_TERM } from '../host/masks.js'
@@ -465,7 +465,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       }
       try {
         tiers.writeTier(home(), parsed.tier)
-        await applyModeBudget(ctx, readMode(home()))
+        await applyModeBudget(ctx, readMode(home()), resolveBudgets(config))
         const info = currentTierInfo()
         return envelope(200, 'saved', `提示词档位已切换为 ${parsed.tier}。`, {
           tier: info.tier,
@@ -576,12 +576,18 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
           : done.previousLanding?.removed === true
             ? '；上一条的落点已清除'
             : ''
+      const externalCopy = typeof done.externalCopy === 'string'
+        ? relHomePath(done.externalCopy, home())
+        : null
       const view = {
         ...done,
         file: redactPath(done.file),
         previousLanding: redactSettlement(done.previousLanding),
+        externalCopy,
       }
-      return envelope(200, 'activated', `已激活「${done.name}」，正文写入 ${view.file}${switched}。`, view)
+      // 被覆盖的外部改动存了副本这件事必须说出来：激活看似「丢了改动」，其实副本在。
+      const copied = externalCopy === null ? '' : `；落点上的外部改动已存副本 ${externalCopy}`
+      return envelope(200, 'activated', `已激活「${done.name}」，正文写入 ${view.file}${switched}${copied}。`, view)
     },
 
     'POST /rules/delete': async (req) => {
