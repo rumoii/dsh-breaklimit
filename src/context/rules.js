@@ -9,7 +9,11 @@
 // 存储（v2）：
 //   breaklimit/rules.json           清单：规则元数据、激活态、落点快照、版本号
 //   breaklimit/bodies/<id>.md       规则正文
-//   breaklimit/landings/<target>.txt 激活前的原文（仅当那个文件本来就有内容）
+//   breaklimit/landings/<target>.txt 激活前的原文（原字节，仅当那个文件本来就有内容）
+//
+// 落点与快照一律按字节处理：文本解码会把非 UTF-8 字节换成 U+FFFD，拿解码结果写回
+// 就毁了原文。写入前比字节，内容没变就不重写；读失败（权限、占用）与「文件不存在」
+// 严格分开，前者一律停手报错，不当成空文件处理。
 //
 // 落点的处置一律基于**激活那一刻的快照**，不基于当前元数据。快照记两件事：这个
 // 文件是插件创建的（created），还是本来就有内容（原文存进 landings）。由此三种终态：
@@ -24,7 +28,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import { atomicWrite, hashText, readTextOrNull } from '../patch/fsx.js'
+import {
+  atomicWrite,
+  atomicWriteBytes,
+  decodeUtf8,
+  hashBytes,
+  hashText,
+  readBytesStrict,
+} from '../patch/fsx.js'
 import { acquireFileLock, releaseFileLock } from '../patch/lock.js'
 import { breaklimitDir } from '../patch/state.js'
 
@@ -104,6 +115,15 @@ function failure(code, message, extra = {}) {
 
 function corruptIndexFailure() {
   return failure('index_corrupt', '规则清单已损坏，插件已停止写入以保护原数据')
+}
+
+/** 清单不可用（损坏或读不到）时的统一守卫。读失败当成空清单正是整表替换的起点。 */
+function indexUnusableFailure(index) {
+  if (index.kind === 'corrupt') return corruptIndexFailure()
+  if (index.kind === 'unreadable') {
+    return failure('index_unreadable', `规则清单读不到，插件已停止写入以保护原数据：${index.error ?? '未知读取错误'}`)
+  }
+  return null
 }
 
 /** 清单版本冲突：读写之间有人改过 rules.json。 */
@@ -212,6 +232,8 @@ function emptyIndex() {
 
 /**
  * 读清单。文件缺失、损坏、版本不符一律退回空清单：偏好坏了不该让插件不可用。
+ * 「读不到」（权限、占用、句柄耗尽）单独报 `unreadable` 并带上原因：它与「文件
+ * 不存在」只差一步，混同就会让调用方把读失败当成空清单整表替换掉。
  *
  * `revision` 是写入版本号，缺省按 0 读；`pendingActivation` 是未提交的激活意图，
  * 只用于诊断与恢复，处置落点时不用它。
@@ -225,14 +247,21 @@ function emptyIndex() {
  *   rules: Array<{id:string,name:string,target:string,activatedAt:string|null}>,
  *   active: string | null, landing: object | null, pendingActivation: object | null,
  *   invalidTargets: Array<{ id: string, target: unknown }>,
- *   kind: 'ok' | 'absent' | 'corrupt' }}
+ *   kind: 'ok' | 'absent' | 'corrupt' | 'unreadable' }}
  */
 export function readIndex(home) {
-  const raw = readTextOrNull(rulesIndexPath(home))
-  if (raw === null) return { ...emptyIndex(), invalidTargets: [], kind: 'absent' }
+  const raw = readBytesStrict(rulesIndexPath(home))
+  if (raw.kind === 'unreadable') {
+    return { ...emptyIndex(), invalidTargets: [], kind: 'unreadable', error: messageOf(raw.error) }
+  }
+  if (raw.kind === 'missing') return { ...emptyIndex(), invalidTargets: [], kind: 'absent' }
   let parsed
   try {
-    parsed = JSON.parse(raw)
+    // 不是合法 UTF-8 的字节解码成替换字符后也可能凑出合法 JSON（名字乱码但结构还在），
+    // 所以先严格解码：解不开就按损坏处理，停写保护。
+    const text = decodeUtf8(raw.bytes)
+    if (text === null) throw new Error('不是合法 UTF-8')
+    parsed = JSON.parse(text)
   } catch {
     return { ...emptyIndex(), invalidTargets: [], kind: 'corrupt' }
   }
@@ -285,6 +314,11 @@ export function readIndex(home) {
  */
 function writeIndex(home, index, expectedRevision, { allowCorruptOverwrite = false } = {}) {
   const current = readIndex(home)
+  if (current.kind === 'unreadable') {
+    const error = new Error(`规则清单读不到，插件已停止写入以保护原数据：${current.error ?? '未知读取错误'}`)
+    error.code = 'index_unreadable'
+    throw error
+  }
   if (current.kind === 'corrupt' && !allowCorruptOverwrite) {
     const error = new Error('规则清单已损坏，插件已停止写入以保护原数据')
     error.code = 'index_corrupt'
@@ -333,6 +367,9 @@ function indexWriteFailure(error, what, extra = {}) {
   if (error?.code === 'conflict') {
     return failure('conflict', `${what}失败：${messageOf(error)}`, extra)
   }
+  if (error?.code === 'index_unreadable' || error?.code === 'index_corrupt') {
+    return failure(error.code, `${what}失败：${messageOf(error)}`, extra)
+  }
   return failure('index_write_failed', `${what}失败：${messageOf(error)}`, extra)
 }
 
@@ -377,9 +414,14 @@ export function listRules(home) {
 }
 
 export function readRule(home, id) {
-  if (!isValidRuleId(id)) return { ok: false, reason: `非法规则 id：${id}` }
-  const text = readTextOrNull(ruleTextPath(home, id))
-  if (text === null) return { ok: false, reason: `规则不存在：${id}` }
+  if (!isValidRuleId(id)) return { ok: false, code: 'invalid_id', reason: `非法规则 id：${id}` }
+  const raw = readBytesStrict(ruleTextPath(home, id))
+  if (raw.kind === 'missing') return { ok: false, code: 'rule_missing', reason: `规则不存在：${id}` }
+  if (raw.kind === 'unreadable') {
+    return { ok: false, code: 'rule_unreadable', reason: `规则正文读不到：${id}`, error: messageOf(raw.error) }
+  }
+  const text = decodeUtf8(raw.bytes)
+  if (text === null) return { ok: false, code: 'rule_unreadable', reason: `规则正文不是合法 UTF-8：${id}` }
   return { ok: true, text }
 }
 
@@ -429,7 +471,8 @@ export function saveRule(home, id, text, meta) {
 
 function saveRuleLocked(home, id, text, meta) {
   const index = readIndex(home)
-  if (index.kind === 'corrupt') return corruptIndexFailure()
+  const unusable = indexUnusableFailure(index)
+  if (unusable !== null) return unusable
   const existing = index.rules.find(rule => rule.id === id)
   const normalized = normalizeMeta(id, meta ?? existing ?? {})
   const previousBody = readRule(home, id)
@@ -472,18 +515,33 @@ function saveRuleLocked(home, id, text, meta) {
   let landingStale = false
   if (index.active === id) {
     const target = index.landing?.target ?? normalized.target
-    const current = readTarget(home, target)
-    if (previousText !== null && current === previousText) {
-      try {
-        atomicWrite(targetPath(home, target), text)
-        landingSynced = true
-      } catch (error) {
-        return failure('landing_write_failed', `同步写入文件失败：${messageOf(error)}`, {
-          bodyWritten: true,
-          indexWritten: true,
-          landingSynced: false,
-        })
+    const current = readTargetState(home, target)
+    if (current.kind === 'unreadable') {
+      // 读不到落点就不同步、也不判「被改过」：把事实报出去，内容一个字节不动。
+      return failure('landing_unreadable', `写入文件读不到，未做同步：${messageOf(current.error)}`, {
+        bodyWritten: true,
+        indexWritten: true,
+        landingSynced: false,
+      })
+    }
+    const previousBytes = previousText === null ? null : Buffer.from(previousText, 'utf8')
+    const unchanged = previousBytes !== null
+      && current.kind === 'ok'
+      && current.bytes.equals(previousBytes)
+    if (unchanged) {
+      const nextBytes = Buffer.from(text, 'utf8')
+      if (!current.bytes.equals(nextBytes)) {
+        try {
+          atomicWriteBytes(targetPath(home, target), nextBytes)
+        } catch (error) {
+          return failure('landing_write_failed', `同步写入文件失败：${messageOf(error)}`, {
+            bodyWritten: true,
+            indexWritten: true,
+            landingSynced: false,
+          })
+        }
       }
+      landingSynced = true
     } else {
       landingStale = true
     }
@@ -499,9 +557,13 @@ function saveRuleLocked(home, id, text, meta) {
   }
 }
 
-/** 读写入文件当前内容。 */
-function readTarget(home, target) {
-  return readTextOrNull(targetPath(home, target))
+/**
+ * 读落点当前内容（字节级）。missing / unreadable / ok 三态分开：「读不到」绝不能
+ * 当成「文件不存在」，否则插件会把一个看不见的文件当自己创建的，既不留快照，
+ * 撤销时还会把它删掉。
+ */
+function readTargetState(home, target) {
+  return readBytesStrict(targetPath(home, target))
 }
 
 /**
@@ -509,10 +571,16 @@ function readTarget(home, target) {
  * `expected` 是插件认为该文件应当有的内容，`actual` 是它现在的内容。
  * 文本拿不到就记 null，不编一个哈希出来。
  */
-function fingerprint(text) {
-  if (typeof text !== 'string') return null
-  // hashText 统一返回 `sha256:<64 位十六进制>`；这里只要十六进制那段的前 16 位。
-  return hashText(text).replace(/^sha256:/u, '').slice(0, 16)
+function fingerprint(value) {
+  const digest = typeof value === 'string'
+    ? hashText(value)
+    : Buffer.isBuffer(value)
+      ? hashBytes(value)
+      : null
+  if (digest === null) return null
+  // hashText/hashBytes 同格式：同一内容的文本与字节表示给出同一个值，两侧可比。
+  // 只要十六进制那段的前 16 位。
+  return digest.replace(/^sha256:/u, '').slice(0, 16)
 }
 
 /** 一条跳过记录。原因与两侧指纹一起报，用户据此判断是不是自己改的。 */
@@ -533,16 +601,23 @@ function settleLanding(home, landing, ourText) {
   const result = { removed: false, restored: false, skipped: [] }
   if (landing === null) return result
   const file = targetPath(home, landing.target)
-  const current = readTarget(home, landing.target)
+  const current = readTargetState(home, landing.target)
+  const ourBytes = typeof ourText === 'string' ? Buffer.from(ourText, 'utf8') : null
 
-  if (current === null) {
+  if (current.kind === 'unreadable') {
+    // 读不到就什么都不动：它可能还在、也可能已被改动，两种都不许推断。
+    result.skipped.push(skipEntry(file, '当前内容读不到，保留原样', ourText, null))
+    return result
+  }
+  if (current.kind === 'missing') {
     // 落点已经不在了：插件创建的视为达成，别人删的不认领。
     if (landing.created) result.removed = true
     return result
   }
-  if (ourText === null || current !== ourText) {
+  const currentBytes = current.bytes
+  if (ourBytes === null || !currentBytes.equals(ourBytes)) {
     // 两侧都记：用户能看到插件写进去的是什么、现在是什么。
-    result.skipped.push(skipEntry(file, '内容已被改动，保留原样', ourText, current))
+    result.skipped.push(skipEntry(file, '内容已被改动，保留原样', ourText, currentBytes))
     return result
   }
   if (landing.created) {
@@ -551,25 +626,49 @@ function settleLanding(home, landing, ourText) {
       result.removed = true
     } catch {
       // 删除失败与内容无关：没有「应当是什么」可比，只报现状。
-      result.skipped.push(skipEntry(file, '删除失败', null, current))
+      result.skipped.push(skipEntry(file, '删除失败', null, currentBytes))
     }
     return result
   }
-  const before = readTextOrNull(landingPath(home, landing.target))
-  if (before === null) {
-    // 原文丢了就绝不覆盖，报出来让人处理。
-    result.skipped.push(skipEntry(file, '找不到激活前的原文，保留现状', null, current))
+  const before = readBytesStrict(landingPath(home, landing.target))
+  if (before.kind !== 'ok') {
+    // 原文丢了或读不到就绝不覆盖，报出来让人处理。
+    result.skipped.push(skipEntry(
+      file,
+      before.kind === 'missing' ? '找不到激活前的原文，保留现状' : '激活前的原文读不到，保留现状',
+      null,
+      currentBytes,
+    ))
     return result
   }
   try {
-    atomicWrite(file, before)
+    atomicWriteBytes(file, before.bytes)
     fs.rmSync(landingPath(home, landing.target), { force: true })
     result.restored = true
   } catch {
     // 写回失败：expected 是没写成功的那份原文，actual 是落点当前内容。
-    result.skipped.push(skipEntry(file, '写回原文失败', before, current))
+    result.skipped.push(skipEntry(file, '写回原文失败', before.bytes, currentBytes))
   }
   return result
+}
+
+/**
+ * 外部改动副本：把即将被激活覆盖、又不在任何插件副本里的字节存一份。
+ * 与快照同目录；名字带目标名与时间戳，不与 landings/<target>.txt 抢入口。
+ */
+function writeExternalCopy(home, target, bytes) {
+  fs.mkdirSync(landingsDir(home), { recursive: true })
+  const now = new Date()
+  const pad = value => String(value).padStart(2, '0')
+  const stamp = `${String(now.getFullYear())}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  writeSequence += 1
+  const file = path.join(
+    landingsDir(home),
+    `${target}.external-${stamp}-${process.pid.toString(36)}-${String(writeSequence)}.txt`,
+  )
+  atomicWriteBytes(file, bytes)
+  return file
 }
 
 /** 删除本次刚写的落点快照；没写就什么都不做。 */
@@ -582,12 +681,12 @@ function discardSnapshot(home, target, written) {
   }
 }
 
-/** 把落点恢复成写之前的内容：原来没有文件就删掉，有就写回。 */
+/** 把落点恢复成写之前的内容：原来没有文件就删掉，有就按原字节写回。 */
 function restoreLanding(home, target, existing) {
   try {
     const file = targetPath(home, target)
     if (existing === null) fs.rmSync(file, { force: true })
-    else atomicWrite(file, existing)
+    else atomicWriteBytes(file, existing)
     return true
   } catch {
     return false
@@ -618,6 +717,10 @@ function rollbackIndex(home, previousIndex, expectedRevision) {
  * 同落点切换时，`landings/<target>.txt` 保存的是**插件第一次接管该落点时的原文**：
  * 只要这份快照还在就沿用，不拿当前落点内容覆盖它。返回值里的 `snapshotKept` 说明
  * 本次是否沿用了已有快照，供上层把提示语说准。
+ *
+ * 激活会覆盖落点上的外部改动（这就是激活的语义），但不丢字节：被覆盖的内容不属于
+ * 任何插件副本（≠ 新正文、≠ 快照原文、≠ 上一条激活规则的正文）时，先存副本再覆盖，
+ * 路径从返回值的 `externalCopy` 报出；副本写不出来就取消激活，宁可不覆盖。
  */
 export function activateRule(home, id) {
   if (!isValidRuleId(id)) return { ok: false, reason: `非法规则 id：${id}` }
@@ -626,7 +729,8 @@ export function activateRule(home, id) {
 
 function activateRuleLocked(home, id) {
   const index = readIndex(home)
-  if (index.kind === 'corrupt') return corruptIndexFailure()
+  const unusable = indexUnusableFailure(index)
+  if (unusable !== null) return unusable
   const loaded = readRule(home, id)
   if (!loaded.ok) return loaded
   // 清单里这条的 target 非法、读取时回落成 AGENTS.md：按回落值激活就是静默改写。
@@ -650,7 +754,12 @@ function activateRuleLocked(home, id) {
     previousLanding = settleLanding(home, index.landing, previousText)
   }
 
-  const existing = readTarget(home, meta.target)
+  const existingState = readTargetState(home, meta.target)
+  if (existingState.kind === 'unreadable') {
+    // 落点读不到就整件事不做：快照存不了、内容比不了，写下去就是盲覆盖。
+    return failure('landing_unreadable', `写入文件读不到，激活已取消：${messageOf(existingState.error)}`)
+  }
+  const existing = existingState.kind === 'ok' ? existingState.bytes : null
 
   // 落点仍归插件管、快照也还在：这份快照记的是插件第一次接管该落点时的原文。
   // 此时不能拿当前落点内容覆盖它——用户手改过落点，再激活另一条到同一落点，就会把
@@ -662,7 +771,12 @@ function activateRuleLocked(home, id) {
   const slotOwned = !sameRuleSameTarget
     && index.landing !== null
     && index.landing.target === meta.target
-  const snapshotKept = slotOwned && readTextOrNull(landingPath(home, meta.target)) !== null
+  const snapshotState = readBytesStrict(landingPath(home, meta.target))
+  if (snapshotState.kind === 'unreadable') {
+    // 快照读不到就停：这时任何写入都可能让「唯一一份原文」失去恢复路径。
+    return failure('snapshot_unreadable', `激活前原文快照读不到，激活已取消：${messageOf(snapshotState.error)}`)
+  }
+  const snapshotKept = slotOwned && snapshotState.kind === 'ok'
   const landing = sameRuleSameTarget || snapshotKept
     ? index.landing
     : { target: meta.target, created: existing === null }
@@ -670,7 +784,7 @@ function activateRuleLocked(home, id) {
   if (!sameRuleSameTarget && !snapshotKept && existing !== null) {
     try {
       fs.mkdirSync(landingsDir(home), { recursive: true })
-      atomicWrite(landingPath(home, meta.target), existing)
+      atomicWriteBytes(landingPath(home, meta.target), existing)
       snapshotWritten = true
     } catch (error) {
       return failure('snapshot_failed', `保存激活前原文失败：${messageOf(error)}`)
@@ -704,8 +818,31 @@ function activateRuleLocked(home, id) {
     return indexWriteFailure(error, '写入激活意图')
   }
 
+  const nextBytes = Buffer.from(loaded.text, 'utf8')
+  // 被覆盖的字节不在任何插件副本里时先存副本（见 activateRule 的 doc）。
+  let externalCopy = null
+  if (existing !== null && !existing.equals(nextBytes)) {
+    const covered = []
+    // 本次刚写的快照存的就是现有字节；沿用的快照记的是首次接管时的原文。
+    if (snapshotWritten) covered.push(existing)
+    else if (snapshotState.kind === 'ok') covered.push(snapshotState.bytes)
+    const previousText = index.active === null ? null : activeRuleTextOrNull(home)
+    if (previousText !== null) covered.push(Buffer.from(previousText, 'utf8'))
+    if (!covered.some(bytes => bytes.equals(existing))) {
+      try {
+        externalCopy = writeExternalCopy(home, meta.target, existing)
+      } catch (error) {
+        const rolledBack = rollbackIndex(home, index, intentRevision)
+        discardSnapshot(home, meta.target, snapshotWritten)
+        const note = rolledBack ? '' : '；清单回滚失败，激活意图仍留在 pendingActivation'
+        return failure('external_copy_failed', `保存落点外部改动副本失败，激活已取消：${messageOf(error)}${note}`, { rolledBack })
+      }
+    }
+  }
   try {
-    atomicWrite(file, loaded.text)
+    // 内容没变就不重写：重写看似无害，但落点可能是非 UTF-8 的旧文件，文本往返
+    // 一次字节就毁了；字节相等时写与不写对宿主完全等价。
+    if (existing === null || !existing.equals(nextBytes)) atomicWriteBytes(file, nextBytes)
   } catch (error) {
     const rolledBack = rollbackIndex(home, index, intentRevision)
     discardSnapshot(home, meta.target, snapshotWritten)
@@ -743,6 +880,7 @@ function activateRuleLocked(home, id) {
     created: landing.created,
     previousLanding,
     snapshotKept,
+    externalCopy,
     revision,
   }
 }
@@ -760,7 +898,8 @@ function activateRuleLocked(home, id) {
 export function deactivateRule(home) {
   return withRulesLock(home, 'deactivate', () => {
     const index = readIndex(home)
-    if (index.kind === 'corrupt') return corruptIndexFailure()
+    const unusable = indexUnusableFailure(index)
+    if (unusable !== null) return unusable
     const skipped = []
     let settlement = { removed: false, restored: false, skipped: [] }
     if (index.active !== null) {
@@ -806,7 +945,8 @@ export function deleteRule(home, id) {
   if (!isValidRuleId(id)) return { ok: false, reason: `非法规则 id：${id}` }
   return withRulesLock(home, 'delete', () => {
     const index = readIndex(home)
-    if (index.kind === 'corrupt') return corruptIndexFailure()
+    const unusable = indexUnusableFailure(index)
+    if (unusable !== null) return unusable
     const wasActive = index.active === id
     const settlement = wasActive
       ? settleLanding(home, index.landing, activeRuleTextOrNull(home))
@@ -856,7 +996,8 @@ export function deleteRule(home, id) {
 export function resetRules(home) {
   return withRulesLock(home, 'reset', () => {
     const index = readIndex(home)
-    if (index.kind === 'corrupt') return corruptIndexFailure()
+    const unusable = indexUnusableFailure(index)
+    if (unusable !== null) return unusable
     const skipped = []
     if (index.active !== null) {
       const settlement = settleLanding(home, index.landing, activeRuleTextOrNull(home))
@@ -884,22 +1025,39 @@ export function resetRules(home) {
  * 首轮收拢。
  *
  * 写入文件里已有内容、却还没有任何规则时，把它导入成 default 并激活：一份已经存在的
- * AGENTS.md 不该因为装了插件就失去作用。只读写入文件、只写插件自己的目录。
+ * AGENTS.md 不该因为装了插件就失去作用。只读写入文件、只写插件自己的目录；内容与落点
+ * 字节一致时不重写落点，非 UTF-8 的落点跳过收拢、原样保留（见 skipped）。
  */
 export function ensureInitialState(home) {
   const index = readIndex(home)
   if (index.kind === 'corrupt') return { active: null, imported: null, corrupt: true }
-  if (index.rules.length > 0) return { active: index.active, imported: null }
+  if (index.kind === 'unreadable') {
+    return { active: null, imported: null, error: `规则清单读不到，已跳过收拢：${index.error ?? '未知读取错误'}` }
+  }
+  if (index.rules.length > 0) return { active: index.active, imported: null, skipped: [] }
+  const skipped = []
   for (const target of RULE_TARGETS) {
-    const text = readTarget(home, target)
-    if (text === null || text.trim() === '') continue
+    const state = readTargetState(home, target)
+    if (state.kind === 'unreadable') {
+      // 读失败不是「没有文件」：不收拢、也不碰下一个落点，把事实如实报出去。
+      return { active: null, imported: null, error: `写入文件读不到，已跳过收拢：${target}`, skipped }
+    }
+    if (state.kind === 'missing') continue
+    const text = decodeUtf8(state.bytes)
+    if (text === null) {
+      // 非 UTF-8 的旧文件（GBK、UTF-16）照原样留着：收拢会把它解码成替换字符写回，
+      // 原字节与快照一起毁掉。不导入、不激活、不动它一个字节。
+      skipped.push({ target, reason: 'not_utf8', message: '内容不是合法 UTF-8，已跳过收拢，文件保持原样' })
+      continue
+    }
+    if (text.trim() === '') continue
     const id = 'default'
     const saved = saveRule(home, id, text, { name: '默认规则', target })
-    if (!saved.ok) return { active: null, imported: null, error: saved.reason }
+    if (!saved.ok) return { active: null, imported: null, error: saved.reason, skipped }
     const activated = activateRule(home, id)
-    return { active: activated.ok ? id : null, imported: id }
+    return { active: activated.ok ? id : null, imported: id, skipped }
   }
-  return { active: null, imported: null }
+  return { active: null, imported: null, skipped }
 }
 
 /**

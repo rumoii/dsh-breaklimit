@@ -15,7 +15,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { atomicWrite, readTextOrNull } from './fsx.js'
+import { atomicWrite, decodeUtf8, readBytesStrict } from './fsx.js'
 
 export const STATE_VERSION = 1
 
@@ -50,15 +50,22 @@ export function transactionDir(home, id) {
  *   | { kind: 'corrupt', reason: string }
  *   | { kind: 'version_mismatch', found: unknown, expected: number }}
  *   corrupt 与 version_mismatch 都表示恢复信息不可信：调用方必须停下来报出来，
- *   而不是当成「没有应用记录」继续走。
+ *   而不是当成「没有应用记录」继续走。文件存在但读不到也归 corrupt：恢复信息
+ *   读不出来与它坏了同样不可信，绝不能当成 absent。
  */
 export function readState(home) {
-  const raw = readTextOrNull(statePath(home))
-  if (raw === null) return { kind: 'absent' }
+  const raw = readBytesStrict(statePath(home))
+  if (raw.kind === 'unreadable') {
+    return { kind: 'corrupt', reason: `清单读不到：${String(raw.error?.message ?? raw.error)}` }
+  }
+  if (raw.kind === 'missing') return { kind: 'absent' }
 
   let parsed
   try {
-    parsed = JSON.parse(raw)
+    // 严格解码：非 UTF-8 的清单解码成替换字符后可能仍能解析，但那已经不是原数据了。
+    const text = decodeUtf8(raw.bytes)
+    if (text === null) throw new Error('不是合法 UTF-8')
+    parsed = JSON.parse(text)
   } catch (error) {
     return { kind: 'corrupt', reason: `不是合法 JSON：${String(error?.message ?? error)}` }
   }

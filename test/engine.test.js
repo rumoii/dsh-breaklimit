@@ -331,11 +331,13 @@ test('写入中途失败后清单被撤销，不留误导性的应用记录', ()
   assert.equal(read(root, 'a.txt'), 'VALUE = 2000\n')
 })
 
-test('状态清单写不进去时一个目标文件都不动', () => {
+test('状态清单不可读时一个目标文件都不动', () => {
   const root = tempDir()
   const home = tempDir()
   write(root, 'a.txt', 'VALUE = 2000\n')
-  // 让 state.json 的位置被一个目录占住，写入必然失败。
+  // 让 state.json 的位置被一个目录占住：读是 EISDIR、写也必败。
+  // 读失败不等于「没有清单」，预检在读取期就报 state_corrupt 拒绝执行；
+  // 真正的「写入期失败」由上一例的 writeFile 注入覆盖（writeState 没有注入缝）。
   fs.mkdirSync(path.join(home, 'breaklimit', 'state.json'), { recursive: true })
 
   const result = apply(root, home, [
@@ -343,7 +345,7 @@ test('状态清单写不进去时一个目标文件都不动', () => {
   ])
 
   assert.equal(result.ok, false)
-  assert.equal(result.code, 'apply_failed')
+  assert.equal(result.code, 'state_corrupt')
   assert.equal(read(root, 'a.txt'), 'VALUE = 2000\n')
 })
 
