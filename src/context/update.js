@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { breaklimitDir } from '../patch/state.js'
 import { atomicWrite, readTextOrNull } from '../patch/fsx.js'
+import { acquireFileLock, releaseFileLock } from '../patch/lock.js'
 
 export const REPO = 'rumoii/dsh-breaklimit'
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`
@@ -102,21 +103,65 @@ export function readUpdateState(home) {
   return { kind: 'ok', state }
 }
 
+// 写入锁的事务 id 计数：同一进程里 HTTP 与命令各自拿各自的 id。
+let lockSequence = 0
+
+/** 锁被占用时的结构化失败。本域的失败通道就是抛错，code 供调用方分支。 */
+function lockBusyError(conflict) {
+  const holder = conflict?.holder ?? null
+  const who = holder === null
+    ? '另一个操作'
+    : `另一个操作（${String(holder.operationId ?? '未知事务')}，pid ${String(holder.pid ?? '未知')}）`
+  const error = new Error(`更新状态正在被${who}占用，本次写入已取消`)
+  error.code = 'locked'
+  error.lockPath = conflict?.path
+  return error
+}
+
+/**
+ * 在跨进程锁内跑一段同步的「读-改-写」临界区。
+ *
+ * 锁文件与补丁事务、规则写入共用 `$DSH_HOME/breaklimit/operation.lock`：改的都是
+ * 同一个 DSH_HOME，互相排斥本来就是对的。锁被占用时立即抛 code 为 'locked' 的
+ * 错误，不排队——autoCheck 把它收进 lastError，HTTP 层走既有的抛错出口。
+ *
+ * @param {string} home - $DSH_HOME 路径。
+ * @param {string} operation - 操作名，进事务 id 便于排查。
+ * @param {() => object} run - 同步临界区。
+ */
+function withUpdateLock(home, operation, run) {
+  lockSequence += 1
+  const operationId = `update-${operation}-${process.pid.toString(36)}-${String(lockSequence)}`
+  // acquireFileLock 抛出时没有本次建出的东西可清（lock.js 自己收干净）；
+  // run 抛出时 finally 保证释放。
+  const handle = acquireFileLock(home, operationId)
+  if (handle.conflict !== undefined) throw lockBusyError(handle.conflict)
+  try {
+    return run()
+  } finally {
+    releaseFileLock(handle)
+  }
+}
+
 /**
  * 合并写入更新状态。写 lastAutoCheckDay 不能把 latestVersion 抹掉，所以是合并不是替换。
+ * 读-改-写在跨进程锁内完成：多个进程共享同一 $DSH_HOME 时不会互相覆盖字段。
+ * 锁被占用时抛 code 为 'locked' 的错误，不动文件。
  *
  * @param {string} home - $DSH_HOME 路径。
  * @param {object} patch - 要更新的字段。
  * @returns {object} 合并后的状态。
  */
 export function writeUpdateState(home, patch) {
-  const current = readUpdateState(home)
-  // 损坏的文件里可能存着「关闭自动检查」这类偏好：先按 rules.json 的恢复先例备份，
-  // 备份不成就不写——宁可留在损坏态，也不把用户的选择悄悄抹掉。
-  if (current.kind === 'corrupt') backUpCorruptState(home)
-  const next = { ...current.state, ...patch }
-  atomicWrite(updateStatePath(home), `${JSON.stringify(next, null, 2)}\n`)
-  return next
+  return withUpdateLock(home, 'write', () => {
+    const current = readUpdateState(home)
+    // 损坏的文件里可能存着「关闭自动检查」这类偏好：先按 rules.json 的恢复先例备份，
+    // 备份不成就不写——宁可留在损坏态，也不把用户的选择悄悄抹掉。
+    if (current.kind === 'corrupt') backUpCorruptState(home)
+    const next = { ...current.state, ...patch }
+    atomicWrite(updateStatePath(home), `${JSON.stringify(next, null, 2)}\n`)
+    return next
+  })
 }
 
 /**

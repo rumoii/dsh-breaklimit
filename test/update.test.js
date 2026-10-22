@@ -20,9 +20,40 @@ import {
   viewOf,
   writeUpdateState,
 } from '../src/context/update.js'
+import { acquireFileLock, lockFilePath, releaseFileLock } from '../src/patch/lock.js'
 
 function tempHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-update-'))
+}
+
+function readLockHolder(home) {
+  return JSON.parse(fs.readFileSync(lockFilePath(home), 'utf8'))
+}
+
+/**
+ * 在改名落盘那一刻记录锁的持有者，用来证明「读-改-写」的写发生在锁内。
+ * 改名是原子写的最后一步；锁文件本身不经这条路径。
+ */
+function watchLockAtWrite(home, records) {
+  const original = fs.renameSync
+  fs.renameSync = (from, to) => {
+    if (to === updateStatePath(home)) records.push(readLockHolder(home))
+    return original(from, to)
+  }
+  return () => { fs.renameSync = original }
+}
+
+/** 让下一次向 file 的改名失败一次：模拟临界区中途的写盘故障。 */
+function failNextWriteTo(file) {
+  const original = fs.renameSync
+  fs.renameSync = (from, to) => {
+    fs.renameSync = original
+    if (to !== file) return original(from, to)
+    const error = new Error('模拟写盘失败')
+    error.code = 'EIO'
+    throw error
+  }
+  return () => { fs.renameSync = original }
 }
 
 test('parseVersion 只认三段版本，允许 v 前缀', () => {
@@ -289,6 +320,109 @@ test('writeUpdateState：备份失败时拒绝写入，损坏文件一个字节�
 
   assert.throws(() => writeUpdateState(home, { lastAutoCheckDay: '2026-03-01' }))
   assert.equal(fs.readFileSync(updateStatePath(home), 'utf8'), '{ not json')
+})
+
+// 以下用例守「读-改-写」的跨进程互斥：锁文件与补丁事务、规则写入同一把。
+
+test('writeUpdateState：跨进程锁被占用时抛 code locked，已有字段一个不丢', () => {
+  const home = tempHome()
+  writeUpdateState(home, { autoCheckUpdates: false, latestVersion: '0.9.4', checkedAt: 7 })
+  const before = fs.readFileSync(updateStatePath(home), 'utf8')
+
+  const handle = acquireFileLock(home, 'other-op')
+  try {
+    assert.throws(
+      () => writeUpdateState(home, { lastAutoCheckDay: '2026-03-01' }),
+      (error) => {
+        assert.equal(error.code, 'locked')
+        assert.match(error.message, /占用/u)
+        return true
+      },
+    )
+  } finally {
+    releaseFileLock(handle)
+  }
+
+  assert.equal(fs.readFileSync(updateStatePath(home), 'utf8'), before, '锁被占用时一个字节都不动')
+  const { state } = readUpdateState(home)
+  assert.equal(state.lastAutoCheckDay, undefined, '切换不能落进别人的锁里')
+  assert.equal(state.autoCheckUpdates, false)
+  assert.equal(state.latestVersion, '0.9.4')
+  assert.equal(state.checkedAt, 7)
+})
+
+test('writeUpdateState：读改写在锁内完成，写入时锁在本进程手里', () => {
+  const home = tempHome()
+  writeUpdateState(home, { latestVersion: '0.9.4', releaseUrl: 'https://example.test/r' })
+
+  const records = []
+  const restore = watchLockAtWrite(home, records)
+  let merged
+  try {
+    merged = writeUpdateState(home, { lastAutoCheckDay: '2026-03-02' })
+  } finally {
+    restore()
+  }
+
+  assert.equal(records.length, 1)
+  assert.equal(records[0].pid, process.pid, '写入那一刻锁在本进程手里')
+  assert.equal(typeof records[0].operationId, 'string')
+  assert.equal(fs.existsSync(lockFilePath(home)), false, '写完释放')
+  assert.equal(merged.lastAutoCheckDay, '2026-03-02')
+  const { state } = readUpdateState(home)
+  assert.equal(state.lastAutoCheckDay, '2026-03-02')
+  assert.equal(state.latestVersion, '0.9.4', '合并而不是覆盖')
+  assert.equal(state.releaseUrl, 'https://example.test/r')
+})
+
+test('writeUpdateState：临界区抛错也释放锁，下一次写入立刻成功', () => {
+  const home = tempHome()
+  writeUpdateState(home, { latestVersion: '0.9.4' })
+  const before = fs.readFileSync(updateStatePath(home), 'utf8')
+
+  const restore = failNextWriteTo(updateStatePath(home))
+  try {
+    assert.throws(
+      () => writeUpdateState(home, { lastAutoCheckDay: '2026-03-03' }),
+      (error) => {
+        assert.equal(error.code, 'EIO', '写盘故障保持原有失败形状，不是 locked')
+        return true
+      },
+    )
+  } finally {
+    restore()
+  }
+
+  assert.equal(fs.existsSync(lockFilePath(home)), false, '异常路径不泄漏锁')
+  assert.equal(fs.readFileSync(updateStatePath(home), 'utf8'), before, '写失败不动已有字段')
+  const next = writeUpdateState(home, { lastAutoCheckDay: '2026-03-03' })
+  assert.equal(next.lastAutoCheckDay, '2026-03-03', '不用等、不用清锁，下一次写入直接成功')
+  assert.equal(next.latestVersion, '0.9.4')
+})
+
+test('autoCheck：锁被占用时回 lastError locked，不发请求不丢字段', async () => {
+  resetPendingAuto()
+  const home = tempHome()
+  writeUpdateState(home, { autoCheckUpdates: true, latestVersion: '0.9.4', checkedAt: 7 })
+  const before = fs.readFileSync(updateStatePath(home), 'utf8')
+
+  const handle = acquireFileLock(home, 'other-op')
+  let calls = 0
+  try {
+    const result = await autoCheck({
+      home,
+      currentVersion: '0.9.3',
+      check: async () => { calls += 1; return {} },
+    })
+    assert.equal(result.lastError, 'locked')
+    assert.equal(calls, 0, '状态写不进去就不发请求')
+    assert.equal(result.latestVersion, '0.9.4', '退回读到的状态')
+  } finally {
+    releaseFileLock(handle)
+    resetPendingAuto()
+  }
+
+  assert.equal(fs.readFileSync(updateStatePath(home), 'utf8'), before)
 })
 
 test('fetchLatestRelease：拒绝 https:// 代理，不把它当明文用', async () => {

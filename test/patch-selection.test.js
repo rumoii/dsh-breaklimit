@@ -12,12 +12,43 @@ import test from 'node:test'
 import {
   SELECTION_VERSION, knownPatchIds, readDisabled, resolvePatches, selectionPath, setPatchEnabled, writeDisabled,
 } from '../src/patch/patch-selection.js'
+import { acquireFileLock, lockFilePath, releaseFileLock } from '../src/patch/lock.js'
 import { PATCHES, patchesForMode } from '../src/patch/index.js'
 
 const RECOMMENDED = patchesForMode('recommended')
 
 function tempHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-selection-'))
+}
+
+function readLockHolder(home) {
+  return JSON.parse(fs.readFileSync(lockFilePath(home), 'utf8'))
+}
+
+/**
+ * 在改名落盘那一刻记录锁的持有者，用来证明「读-改-写」的写发生在锁内。
+ * 改名是原子写的最后一步；锁文件本身不经这条路径。
+ */
+function watchLockAtWrite(home, records) {
+  const original = fs.renameSync
+  fs.renameSync = (from, to) => {
+    if (to === selectionPath(home)) records.push(readLockHolder(home))
+    return original(from, to)
+  }
+  return () => { fs.renameSync = original }
+}
+
+/** 让下一次向 file 的改名失败一次：模拟临界区中途的写盘故障。 */
+function failNextWriteTo(file) {
+  const original = fs.renameSync
+  fs.renameSync = (from, to) => {
+    fs.renameSync = original
+    if (to !== file) return original(from, to)
+    const error = new Error('模拟写盘失败')
+    error.code = 'EIO'
+    throw error
+  }
+  return () => { fs.renameSync = original }
 }
 
 function seed(home, content) {
@@ -127,4 +158,74 @@ test('版本不符时退回全部启用，并报 version_mismatch', () => {
   assert.equal(result.kind, 'version_mismatch')
   assert.deepEqual(result.disabled, [])
   assert.equal(resolvePatches(home).length, RECOMMENDED.length)
+})
+
+// 以下用例守 setPatchEnabled「读-改-写」的跨进程互斥：锁文件与补丁事务、规则写入同一把。
+
+test('setPatchEnabled：跨进程锁被占用时抛 code locked，禁用集一个不丢', () => {
+  const home = tempHome()
+  setPatchEnabled(home, 'read.limits', false)
+  const before = fs.readFileSync(selectionPath(home), 'utf8')
+
+  const handle = acquireFileLock(home, 'other-op')
+  try {
+    assert.throws(
+      () => setPatchEnabled(home, 'output.trim', false),
+      (error) => {
+        assert.equal(error.code, 'locked')
+        assert.match(error.message, /占用/u)
+        return true
+      },
+    )
+    assert.throws(() => setPatchEnabled(home, 'P-99', false), /Unknown patch id/u, '输入错误先于锁判定')
+  } finally {
+    releaseFileLock(handle)
+  }
+
+  assert.equal(fs.readFileSync(selectionPath(home), 'utf8'), before, '锁被占用时一个字节都不动')
+  assert.deepEqual(readDisabled(home).disabled, ['read.limits'])
+})
+
+test('setPatchEnabled：读改写在锁内完成，切换合并进禁用集', () => {
+  const home = tempHome()
+  setPatchEnabled(home, 'read.limits', false)
+
+  const records = []
+  const restore = watchLockAtWrite(home, records)
+  let result
+  try {
+    result = setPatchEnabled(home, 'output.trim', false)
+  } finally {
+    restore()
+  }
+
+  assert.equal(records.length, 1)
+  assert.equal(records[0].pid, process.pid, '写入那一刻锁在本进程手里')
+  assert.equal(fs.existsSync(lockFilePath(home)), false, '写完释放')
+  assert.deepEqual(result.disabled, ['output.trim', 'read.limits'])
+  assert.deepEqual(readDisabled(home).disabled, ['output.trim', 'read.limits'], '两次切换都保住')
+})
+
+test('setPatchEnabled：临界区抛错也释放锁，下一次切换立刻成功', () => {
+  const home = tempHome()
+  setPatchEnabled(home, 'read.limits', false)
+  const before = fs.readFileSync(selectionPath(home), 'utf8')
+
+  const restore = failNextWriteTo(selectionPath(home))
+  try {
+    assert.throws(
+      () => setPatchEnabled(home, 'output.trim', false),
+      (error) => {
+        assert.equal(error.code, 'EIO', '写盘故障保持原有失败形状，不是 locked')
+        return true
+      },
+    )
+  } finally {
+    restore()
+  }
+
+  assert.equal(fs.existsSync(lockFilePath(home)), false, '异常路径不泄漏锁')
+  assert.equal(fs.readFileSync(selectionPath(home), 'utf8'), before, '写失败不动已有字段')
+  const next = setPatchEnabled(home, 'output.trim', false)
+  assert.deepEqual(next.disabled, ['output.trim', 'read.limits'], '不用等、不用清锁，下一次切换直接成功')
 })
