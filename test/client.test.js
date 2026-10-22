@@ -1748,6 +1748,101 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   assert.equal(textOf(loadingConfig).includes('读取失败'), false, 'loading 期配置卡不得误报「读取失败」')
 })
 
+test('沙箱档位徽章随 modeSource 诚实化：default 显示未探测，session 与缺席按档位显示', () => {
+  const renderPage = (lang) => {
+    const { exported } = loadClient(lang === undefined ? {} : { document: { documentElement: { lang } } })
+    return exported.OverviewPage
+  }
+
+  const fakeF = {
+    rootMissing: false,
+    broken: false,
+    blocked: [],
+    mode: 'recommended',
+    rules: [{ id: 'r1', name: '日常规则', target: 'AGENTS.md' }],
+    activeRule: 'r1',
+    customPrompt: false,
+    enabledCount: 1,
+    pendingFiles: 1,
+    total: 3,
+    applied: null,
+    preCode: 'ok',
+    restartPending: false,
+  }
+  const baseStatus = {
+    hostRoot: 'C:\\Users\\rumo\\dsh-host',
+    target: { version: '0.9.0', commit: 'abc1234' },
+    enabled: true,
+    preflight: { ok: true, code: 'ok' },
+    inject: { ok: true },
+  }
+  const render = (OverviewPage, status) => mount(OverviewPage({
+    f: fakeF,
+    status: { ...baseStatus, ...status },
+    override: null,
+    busy: false,
+    enabledPending: false,
+    restart: null,
+    restartView: null,
+    step: { tone: 'ok', title: '完成' },
+    words: { phase: 'ready', stale: false, entries: [] },
+    loadedAt: Date.now(),
+    guideOpen: false,
+    onToggleGuide() {},
+    onRun() {},
+    onGo() {},
+    onToggleEnabled() {},
+    onCopy() {},
+    onOpenHelp() {},
+    nextNotice: null,
+    overviewNotice: null,
+  }))
+
+  // 沙箱档位行：行名是第一个 span，Tag 展开后的 span 是徽章。
+  // 徽章文案只取字符串子节点并展平嵌套数组：Tag 的色点是元素子节点、
+  // null 占位在 React 里不渲染（textOf 桩把它串成 'null' 会污染精确比对），
+  // 组件子节点又会被 mount 包进一层嵌套数组。
+  const labelOf = (node) => {
+    const parts = []
+    const walk = (value) => {
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item)
+        return
+      }
+      if (value === null || value === undefined || typeof value === 'object') return
+      parts.push(String(value))
+    }
+    walk(node.children)
+    return parts.join('')
+  }
+  const sandboxBadge = (tree, rowLabel) => {
+    const row = findAll(tree, n => n.type === 'div' && textOf(n).startsWith(rowLabel))[0]
+    assert.equal(Boolean(row), true, '环境与权限卡应有沙箱档位行')
+    return findAll(row, n => n.type === 'span' && textOf(n) !== rowLabel)[0]
+  }
+
+  // modeSource === 'default'：档位是部署默认档的解析结果，不是会话档位；
+  // 即便 mode 是 danger-full-access，徽章也不得沿用档位文案。
+  const zh = renderPage('zh-CN')
+  const unprobed = sandboxBadge(render(zh, { mode: 'danger-full-access', modeSource: 'default' }), '沙箱档位')
+  assert.equal(labelOf(unprobed), '档位未探测')
+  assert.equal(findAll(unprobed, n => n.props?.['aria-hidden'] === 'true').length, 0, '未探测徽章应为中性样式（无色点）')
+
+  // modeSource === 'session'：会话档位照常显示（完全权限带 warn 色点）。
+  const sessionBadge = sandboxBadge(render(zh, { mode: 'danger-full-access', modeSource: 'session' }), '沙箱档位')
+  assert.equal(labelOf(sessionBadge), '完全权限')
+  assert.equal(findAll(sessionBadge, n => n.props?.['aria-hidden'] === 'true').length, 1, '完全权限徽章应带 warn 色点')
+
+  // modeSource 缺席（旧后端）：按 session 处理，显示照旧跟着 mode 走。
+  const legacyBadge = sandboxBadge(render(zh, { mode: 'read-only' }), '沙箱档位')
+  assert.equal(labelOf(legacyBadge), '宿主受限')
+
+  // 英文 i18n 同一场景有对应文案。
+  const en = renderPage()
+  const enBadge = sandboxBadge(render(en, { mode: 'danger-full-access', modeSource: 'default' }), 'Sandbox level')
+  assert.equal(labelOf(enBadge), 'Level not probed')
+})
+
 test('重塑 PatchesPage：已选数量徽章、阻断/未配目录 Notice、分界标题、补丁列表高光/胶囊/模式门禁与悬浮底部栏', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { PatchesPage } = exported

@@ -149,6 +149,8 @@ export function buildStatus(ctx, config, runtime) {
   const hostRoot = hostRootInfo.root
   const mode = readMode(home)
   const { state: loaded, preflight: preflightSummary } = inspectPatches({ root: hostRoot, home, mode })
+  const session = sessionOf(runtime.holder)
+  const sandbox = describeSandboxPolicy(ctx, session)
 
   return {
     plugin: name,
@@ -161,8 +163,13 @@ export function buildStatus(ctx, config, runtime) {
     target: DSH_TARGET,
     hostRoot,
     hostRootSource: hostRootInfo.source,
-    mode: currentMode(ctx, sessionOf(runtime.holder)),
-    sandbox: describeSandboxPolicy(ctx, sessionOf(runtime.holder)),
+    mode: currentMode(ctx, session),
+    // 档位归因：只有拿着会话且真解析出了档位才算会话档。没有会话时宿主
+    // policy.resolve 落的是部署默认档（bundle.yml 里是 danger-full-access），
+    // 把它当成会话档会让只读会话的界面显示「完全权限」；档位解析不出来同理。
+    // mode 本身不动，仍报解析结果，只多说一句这档位不是从会话来的。
+    modeSource: session !== undefined && sandbox.available ? 'session' : 'default',
+    sandbox,
     seams: {
       approval: runtime.counters.approval,
       escalation: runtime.counters.escalation,
@@ -237,11 +244,23 @@ export function buildStatus(ctx, config, runtime) {
         }
       }
 
+      // defaultPreset 是宿主 getter，有 throw 路径（未知预设名）。与上面两处一样
+      // 降级：读不到就给 null，不让整个状态接口挂掉。getter 只取一次。
+      let defaultPreset = null
+      if (presets !== undefined) {
+        try {
+          const value = presets.defaultPreset
+          defaultPreset = typeof value === 'string' ? value : null
+        } catch {
+          defaultPreset = null
+        }
+      }
+
       return describePermissionLayers({
         table,
         current,
         mode: currentMode(ctx, session),
-        defaultPreset: typeof presets?.defaultPreset === 'string' ? presets.defaultPreset : null,
+        defaultPreset,
         defaultPolicy: typeof approval?.config?.policy === 'string' ? approval.config.policy : null,
       })
     })(),

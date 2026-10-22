@@ -1452,6 +1452,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       takeoverStateOff: "已暂停",
       sandboxFullAccess: "完全权限",
       sandboxHostDefault: "宿主受限",
+      sandboxUnprobed: "档位未探测",
 
       // 阶段四：模式权衡卡片、横向对比表、Prompt 编辑器与规则安全把手
       // 模式权衡与预算
@@ -2246,6 +2247,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       takeoverStateOff: "Paused",
       sandboxFullAccess: "Full access",
       sandboxHostDefault: "Host restricted",
+      sandboxUnprobed: "Level not probed",
 
       // Phase 4: Mode tradeoff cards, comparison table, prompt editor & rules guardrails
       // Mode tradeoffs & budget
@@ -4056,6 +4058,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const takeoverOn = status?.enabled === true
     const warnings = Array.isArray(status?.permission?.warnings) ? status.permission.warnings : []
     const isFullAccess = status?.mode === "danger-full-access"
+    // modeSource 缺席（旧后端）按 session 处理：只有后端明说档位落的是部署默认档
+    // 时才显示中性文案，不把部署默认当成会话档位。
+    const modeUnprobed = status?.modeSource === "default"
     const diagText = formatDiagnostics(status, f)
     const actionCard = deriveActionCard(status, f)
     const actionToneClass = actionCard.tone ? ` ${actionCard.tone}` : ""
@@ -4175,7 +4180,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 h("span", null, modeLabel(f.mode))),
               h("div", null,
                 h("span", { className: "bkl-status-key" }, T.rowSandbox),
-                h(Tag, { tone: isFullAccess ? "warn" : undefined }, isFullAccess ? T.sandboxFullAccess : T.sandboxHostDefault)),
+                h(Tag, { tone: !modeUnprobed && isFullAccess ? "warn" : undefined }, modeUnprobed ? T.sandboxUnprobed : isFullAccess ? T.sandboxFullAccess : T.sandboxHostDefault)),
               h("div", null,
                 h("span", { className: "bkl-status-key" }, h(Term, { termKey: "preflight", label: T.rowPreflight })),
                 h(Tag, { tone: preTone }, preValue)),

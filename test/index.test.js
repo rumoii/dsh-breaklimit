@@ -5,9 +5,13 @@
 // 降级文本的改写判定，以及状态文本的组装。
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import { appliedSummary, describePermissionLayers, formatStatusText, hardenInstructionText } from '../src/plugin.js'
+import { buildStatus } from '../src/host/status.js'
 
 // 以下两句照宿主 packages/context/agent-instructions/src/render.ts 抄录，不要按记忆改写。
 // SOFT_INTRO 对应 AGENT_INSTRUCTIONS_INTRO（render.ts:18）；SOFT_SCOPE 对应
@@ -409,6 +413,100 @@ test('档位缺失时回落到默认档，不显示已移除的档名', () => {
 test('档位配置正常时不出现档位问题行', () => {
   const text = formatStatusText({ ...STATUS_BASE, tier: { ...STATUS_BASE.tier, kind: 'ok' } })
   assert.doesNotMatch(text, /档位问题/)
+})
+
+// 状态组装（buildStatus）里 modeSource 的归因与 defaultPreset 的降级。
+//
+// buildStatus 要拿宿主服务，这里按 seams-order.test.js 的先例桩一个只实现 get() 的
+// ctx。返回的服务形状照宿主公开接口（sandboxPolicy.resolve、permissionPresets 的
+// defaultPreset getter），断言的是本插件自己的归因与降级分支，不是宿主行为——
+// 仿造品证明不了宿主的解析语义，只能证明我们怎么读它。DSH_HOME 指向本用例建的
+// 临时目录，不碰真实的 ~/.dsh。
+
+const COUNTERS = {
+  approval: 0, escalation: 0, escalationRejected: 0, toolGate: 0, editIntent: 0,
+  assemble: 0, preStep: 0, hardenHits: 0, hardenMisses: 0,
+}
+
+const stubRuntime = (extra = {}) => ({ enabled: true, counters: { ...COUNTERS }, ...extra })
+
+/** 临时 DSH_HOME 里跑一次真实组装；删除前确认前缀与位置，只清本用例建的目录。 */
+function buildWithStub(services, runtime) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-status-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    return buildStatus({ get: (key) => services[key] }, {}, runtime)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    if (home.includes('bkl-status-') && home.startsWith(os.tmpdir())) fs.rmSync(home, { recursive: true, force: true })
+  }
+}
+
+// 部署默认档是 danger-full-access（bundle.yml）：有会话时按会话档位解析，没会话时
+// 宿主 policy.resolve 落的是部署默认档。
+const sessionAwarePolicy = {
+  resolve: ({ session } = {}) => (session === undefined ? { mode: 'danger-full-access' } : { mode: 'read-only' }),
+}
+
+test('状态组装：拿着会话且解析得出档位时 modeSource 是 session', () => {
+  const status = buildWithStub(
+    { sandboxPolicy: sessionAwarePolicy },
+    stubRuntime({ holder: { agent: { session: {} } } }),
+  )
+  assert.equal(status.mode, 'read-only')
+  assert.equal(status.modeSource, 'session')
+})
+
+test('状态组装：会话不可得时落在部署默认档，modeSource 是 default，mode 仍如实报出', () => {
+  const status = buildWithStub(
+    { sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } },
+    stubRuntime(),
+  )
+  assert.equal(status.mode, 'danger-full-access')
+  assert.equal(status.modeSource, 'default')
+})
+
+test('状态组装：档位解析不出来时 modeSource 同样降级为 default', () => {
+  const status = buildWithStub(
+    { sandboxPolicy: { resolve: () => { throw new Error('sandbox: broken') } } },
+    stubRuntime({ holder: { agent: { session: {} } } }),
+  )
+  assert.equal(status.mode, 'read-only')
+  assert.equal(status.modeSource, 'default')
+})
+
+test('宿主 defaultPreset getter 抛错时降级为 null，状态组装与格式化都不挂', () => {
+  const presets = {
+    names: ['read-only', 'danger-full-access'],
+    resolve: (presetName) => ({ sandbox: presetName, approval: 'ask' }),
+    current: () => 'read-only',
+    get defaultPreset() { throw new Error('permission: unknown preset "gone"') },
+  }
+  const status = buildWithStub(
+    { sandboxPolicy: sessionAwarePolicy, permissionPresets: presets },
+    stubRuntime({ holder: { agent: { session: {} } } }),
+  )
+  assert.equal(status.permission.defaultPreset, null)
+  // GET /status 的数据源照常组装，终端文本照常格式化，mode 行语义不变。
+  assert.match(formatStatusText(status), /当前档位\s+read-only/u)
+})
+
+test('defaultPreset 读得到时原样报出', () => {
+  const status = buildWithStub(
+    {
+      sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+      permissionPresets: {
+        names: ['read-only'],
+        resolve: () => ({ sandbox: 'read-only', approval: 'ask' }),
+        current: () => null,
+        defaultPreset: 'danger-full-access',
+      },
+    },
+    stubRuntime(),
+  )
+  assert.equal(status.permission.defaultPreset, 'danger-full-access')
 })
 
 
