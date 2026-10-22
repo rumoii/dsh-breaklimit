@@ -207,6 +207,17 @@ function fromOperation(result) {
   return envelope(400, result.code, view.message, view)
 }
 
+// 规则域失败到 HTTP 状态的映射。并发冲突（规则锁被占用 locked、清单 revision 冲突
+// conflict）与清单损坏（index_corrupt）是「换个时机重试或先恢复」的处境，报 409；
+// 输入类失败与其余失败保持 400。只让状态码如实分类，信封 code 沿各路由原样：save 与
+// recover-corrupt 透传失败 code，activate / delete / reset 统一回 rule_invalid
+// （index_corrupt 除外，保留原 code），并发冲突在这些路由上同样以 409 报出。
+const RULE_CONFLICT_CODES = new Set(['locked', 'conflict', 'index_corrupt'])
+
+function rulesFailureStatus(code) {
+  return RULE_CONFLICT_CODES.has(code) ? 409 : 400
+}
+
 /** 从当前进程的命令行还原一条可以直接粘贴的重启命令。 */
 function restartCommand() {
   const origin = process.argv
@@ -549,7 +560,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (!saved.ok) {
         // 失败 reason 来自 messageOf(error)，含 $DSH_HOME 下的绝对路径，出网前脱敏。
         if (saved.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(saved.reason))
-        return envelope(400, saved.code ?? 'rule_invalid', redactPathsInText(saved.reason), {
+        return envelope(rulesFailureStatus(saved.code), saved.code ?? 'rule_invalid', redactPathsInText(saved.reason), {
           bodyWritten: saved.bodyWritten === true,
           indexWritten: saved.indexWritten === true,
           landingSynced: saved.landingSynced === true,
@@ -579,7 +590,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         const cleared = rules.deactivateRule(home())
         if (!cleared.ok) {
           if (cleared.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(cleared.reason))
-          return envelope(400, 'rule_invalid', redactPathsInText(cleared.reason))
+          return envelope(rulesFailureStatus(cleared.code), 'rule_invalid', redactPathsInText(cleared.reason))
         }
         const view = { ...cleared, skipped: redactSettlement(cleared).skipped }
         if (cleared.kept === true) {
@@ -597,7 +608,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       const done = rules.activateRule(home(), parsed.id)
       if (!done.ok) {
         if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
-        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
+        return envelope(rulesFailureStatus(done.code), 'rule_invalid', redactPathsInText(done.reason))
       }
       // 落点被外部改过时不能说「已保留」了事：snapshotKept 为 true 才是首次接管时
       // 的那份原文仍在；否则本次激活会直接覆盖落点上的内容。
@@ -637,7 +648,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (!done.ok) {
         // 失败 reason 含 errno 原文与绝对路径，出网前脱敏（与 save/activate 同口径）。
         if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
-        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
+        return envelope(rulesFailureStatus(done.code), 'rule_invalid', redactPathsInText(done.reason))
       }
       // 落点被外部改过时快照不随规则删除清除，归属留在清单里；这一条必须说出来，
       // 否则用户以为删干净了，而盘上还躺着一份他不知道的原文。
@@ -652,7 +663,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       const done = rules.resetRules(home())
       if (!done.ok) {
         if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
-        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
+        return envelope(rulesFailureStatus(done.code), 'rule_invalid', redactPathsInText(done.reason))
       }
       return envelope(200, 'reset', `已清空规则，移除 ${String(done.removed)} 个文件。`, done)
     },
@@ -660,7 +671,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /rules/recover-corrupt': () => {
       const recovered = rules.recoverCorruptIndex(home())
       if (!recovered.ok) {
-        return envelope(400, recovered.code ?? 'recovery_failed', redactPathsInText(recovered.reason))
+        return envelope(rulesFailureStatus(recovered.code), recovered.code ?? 'recovery_failed', redactPathsInText(recovered.reason))
       }
       return envelope(200, 'recovered', '规则清单已备份并重置为空清单。', {
         // 相对 `$DSH_HOME`：前端补前缀后是一个能直接粘贴进资源管理器的路径。
