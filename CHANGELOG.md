@@ -2,8 +2,13 @@
 
 ## 未发布
 
+- 规则与落点数据安全：落点与落点快照按原字节读写，内容不变不重写；非 UTF-8 的落点（GBK、UTF-16）不再被解码写回毁掉，不自动收拢、原样保留。“读不到”与“文件不存在”严格分开：落点、清单、正文存在但读不到时，激活/保存/取消激活一律停手报错，不再被当成空清单整表替换或当成插件自建文件删掉。激活覆盖落点上的外部改动前先存副本（`landings/<target>.external-*.txt`）并随结果报出，副本写不出来则取消激活。
+- 执行层预算在切档入口补传配置：`/breaklimit tier` 与 `POST /breaklimit/tier` 此前丢弃 `budgets` 覆盖、静默落回内置两档，与 doctor 的配置校验自相矛盾；现与装载期同一取值入口。
+- 设置页假成功收口：词库首次读取未完成时拒绝整表写入（此前会以空表为基线覆盖真词库）；HTTP 客户端只认标准信封，200 配 HTML/空体/缺 `ok` 的 JSON 一律判失败，不再把插件未挂载当成功。
+- `tools/rebuild-state.mjs` 防自毁：零采纳拒绝写清单（退出码 2），备份改带时间戳永不覆盖，有未采纳目标时退出码 1；测试隔离 `DSH_HOME`，`npm test` 不再触碰真实数据目录。
+
 - 兼容性与配置按 DSH 插件规范声明：`package.json` 用 `engines.dsh: 0.2.1-rc.2` 取代自定义 `dshTarget`，安装与启动由宿主按该版本判定，版本不符时跳过本组合包；新增 Standard Schema 形式的 `Config`，装载前校验行配置并补齐默认值，未知键原样保留、已知键类型错误报出位置。对账工具与发布检查改读 `engines.dsh`。
-- 执行层预算进入配置：`budgets.recommended` / `budgets.unrestricted` 可覆盖超时、超时上限、输出上限与子代理深度，缺省值与原内置两档一致；写错键名、非正整数，或 `maxTimeoutMs` 小于 `timeoutMs` 时装载期报错。状态新增 `sandbox` 字段与「档位来源」一行，把「真的只读」与「读不到 sandboxPolicy」分开报告，降级不再静默。预算提交的读回核验拆成两档：装载期 volatile 未就绪记 `unverified`，只有读到值与目标不符才记 `mismatched`；状态读取时用当前读数复核一遍，能读到的从 `unverified` 移除、读到但不相等的转进 `mismatched`，启动时不再误报“没生效”。
+- 执行层预算进入配置：`budgets.recommended` / `budgets.unrestricted` 可覆盖超时、超时上限、输出上限与子代理深度，缺省值与原内置两档一致；写错键名、非整数或超出范围（`maxDepth` 允许 0，其余键须为正整数），或 `maxTimeoutMs` 小于 `timeoutMs` 时装载期报错。状态新增 `sandbox` 字段与「档位来源」一行，把「真的只读」与「读不到 sandboxPolicy」分开报告，降级不再静默。预算提交的读回核验拆成两档：装载期 volatile 未就绪记 `unverified`，只有读到值与目标不符才记 `mismatched`；状态读取时用当前读数复核一遍，能读到的从 `unverified` 移除、读到但不相等的转进 `mismatched`，启动时不再误报“没生效”。
 
 ## 0.9.4 · 2026-10-21
 
