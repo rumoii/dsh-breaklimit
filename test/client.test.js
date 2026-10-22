@@ -991,10 +991,11 @@ function loadSectionHarness(writeTextImpl, options = {}) {
   }
   const sandbox = {
     window: { __ModuleLoader__: { load(value) { registration = value } } },
-    document: { head: null, documentElement: { lang: 'zh-CN' }, getElementById() { return null } },
+    document: { head: null, documentElement: { lang: options.lang ?? 'zh-CN' }, getElementById() { return null } },
     navigator: { language: 'zh-CN', clipboard: { writeText: writeTextImpl } },
-    // load() 里的 fetch 永不落定，避免桩环境下产生无关的失败路径与计时器。
-    fetch: () => new Promise(() => {}),
+    // load() 里的 fetch 默认永不落定，避免桩环境下产生无关的失败路径与计时器；
+    // 需要驱动真实 request() 信封校验的用例用 options.fetch 覆盖。
+    fetch: options.fetch ?? (() => new Promise(() => {})),
     setTimeout: (fn, ms) => {
       const id = nextTimerId++
       timers.set(id, fn)
@@ -2618,4 +2619,159 @@ test('P2 壳层：PLUGIN_VERSION 与 package.json version 同步', () => {
   const match = /const PLUGIN_VERSION = "([^"]*)"/.exec(source)
   assert.equal(Boolean(match), true, 'client.js 应含 const PLUGIN_VERSION = "..." 常量（改名或挪走都会失配）')
   assert.equal(match[1], pkg.version, `PLUGIN_VERSION（${match[1]}）应等于 package.json version（${pkg.version}）`)
+})
+
+// ---- A4/A5：词库写入守卫与请求信封校验 -------------------------------------
+//
+// A5 的坏响应桩。真实 Response 里 HTML 与空体都让 json() 抛错，被 request() 的
+// .catch(() => null) 吃成 null；缺 ok 的 JSON 则是 json() 正常解析出残缺信封。
+const goodAliasEnvelope = (entries) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    ok: true,
+    code: 'ok',
+    message: '',
+    data: { entries: entries.map(entry => ({ ...entry })), limits: { maxEntries: 100, maxTerm: 64 }, lastHits: 0 },
+  }),
+})
+const badAliasResponses = [
+  ['200 HTML', () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('html is not json') } })],
+  ['204 空体', () => ({ ok: true, status: 204, json: async () => { throw new SyntaxError('empty body') } })],
+  ['缺 ok 的 JSON', () => ({ ok: true, status: 200, json: async () => ({ code: 'ok', message: '', data: { entries: [] } }) })],
+]
+
+test('A4 词库 store：首次读取落定前（loading）commit 拒绝写入，绝不发 PUT 整表覆盖', async () => {
+  const { exported } = loadClient()
+  const calls = []
+  let pendingGet = null
+  const requests = {
+    get: () => {
+      calls.push(['get'])
+      return new Promise((resolve) => { pendingGet = resolve })
+    },
+    put: async (_path, body) => {
+      calls.push(['put', JSON.parse(JSON.stringify(body))])
+      return { ok: true, code: 'saved', data: { entries: body.entries } }
+    },
+  }
+  const store = exported.createAliasStore(requests)
+  const reading = store.read()
+
+  // GET /alias 还没回来（phase=loading）：按空表算整表再 PUT 会把真实词库全删，必须拒绝。
+  const refused = await store.commit({ type: 'save', originalFrom: null, entry: { from: 'a', to: 'b' } })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.unknown, false)
+  assert.equal(refused.refused, true, 'loading 态的拒绝形状与 failed/stale 一致')
+  assert.equal(calls.filter(call => call[0] === 'put').length, 0, 'loading 态不许发出 PUT /alias')
+  assert.equal(store.state.phase, 'loading')
+  assert.deepEqual(Array.from(store.state.entries, entry => entry.from), [], '拒绝写入不动 entries')
+
+  // 读取落定后照常可写：只堵 loading 窗口，ready 的写入语义不变。
+  pendingGet({ ok: true, code: 'ok', message: '', data: { entries: [{ from: 'x', to: 'y' }], limits: { maxEntries: 100, maxTerm: 64 } } })
+  await reading
+  assert.equal(store.state.phase, 'ready')
+  const saved = await store.commit({ type: 'save', originalFrom: null, entry: { from: 'a', to: 'b' } })
+  assert.equal(saved.ok, true)
+  assert.equal(calls.filter(call => call[0] === 'put').length, 1, 'ready 后 commit 照常发 PUT')
+  assert.deepEqual(Array.from(store.state.entries, entry => entry.from), ['x', 'a'])
+})
+
+test('A5 信封校验：200 HTML、空体、缺 ok 的 JSON 都走失败路径，词库不被清空、不假成功', async () => {
+  for (const [label, makeBad] of badAliasResponses) {
+    // 读取侧：先用合法信封读出真实词库，再让 GET 回坏响应。
+    let mode = 'good'
+    const reader = loadClient({
+      fetch: async () => (mode === 'good' ? goodAliasEnvelope([{ from: 'a', to: 'b' }]) : makeBad()),
+    })
+    const store = reader.exported.aliasStore
+    await store.read()
+    assert.equal(store.state.phase, 'ready', `${label}：合法信封应读取成功`)
+    assert.deepEqual(Array.from(store.state.entries, entry => entry.from), ['a'], `${label}：合法信封应读到词库`)
+
+    mode = 'bad'
+    await store.read()
+    assert.equal(store.state.phase, 'failed', `${label}：坏响应不许假成功（phase 不能落 ready）`)
+    assert.equal(store.state.stale, true, `${label}：旧词库应保留并标旧`)
+    assert.deepEqual(Array.from(store.state.entries, entry => entry.from), ['a'], `${label}：坏响应不许把词库清成空表`)
+
+    // 写入侧：GET 正常、PUT 回坏响应，commit 必须报失败且不动列表。
+    let putMode = 'good'
+    const writer = loadClient({
+      fetch: async (_url, init) => (init?.method === 'PUT' && putMode === 'bad' ? makeBad() : goodAliasEnvelope([{ from: 'a', to: 'b' }])),
+    })
+    const store2 = writer.exported.aliasStore
+    await store2.read()
+    assert.equal(store2.state.phase, 'ready', `${label}：写入侧前置读取成功`)
+    putMode = 'bad'
+    const failed = await store2.commit({ type: 'delete', from: 'a' })
+    assert.equal(failed.ok, false, `${label}：PUT 坏响应不许假成功`)
+    assert.equal(failed.unknown, false, `${label}：坏响应是明确失败，不是结果未知`)
+    assert.deepEqual(Array.from(store2.state.entries, entry => entry.from), ['a'], `${label}：写失败不动列表`)
+  }
+})
+
+test('A5 合法信封路径零变化：正常 GET/PUT 照常读写词库', async () => {
+  let disk = [{ from: 'a', to: 'b' }]
+  const { exported } = loadClient({
+    fetch: async (_url, init) => {
+      if (init?.method === 'PUT') disk = JSON.parse(init.body).entries
+      return goodAliasEnvelope(disk)
+    },
+  })
+  const store = exported.aliasStore
+  await store.read()
+  assert.equal(store.state.phase, 'ready')
+  assert.deepEqual(Array.from(store.state.entries, entry => entry.from), ['a'])
+  const saved = await store.commit({ type: 'save', originalFrom: null, entry: { from: 'c', to: 'd' } })
+  assert.equal(saved.ok, true, '合法信封的 PUT 应保存成功')
+  assert.deepEqual(disk.map(entry => entry.from), ['a', 'c'], 'PUT 整表按 commit 计算结果发出')
+  assert.deepEqual(Array.from(store.state.entries, entry => entry.from), ['a', 'c'])
+})
+
+test('A5 explain：bad_response 有独立标题与下一步（中英两套），错误信封仍按后端 code 翻译', async () => {
+  // hooks[1] 注入 null：status 停在空，概览体直接渲染 explain 的结果（Notice.notice）。
+  const html = loadSectionHarness(async () => {}, {
+    hooks: { 1: null },
+    fetch: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('html is not json') } }),
+  })
+  html.render()
+  await flushMicrotasks()
+  const notice = findAll(html.render(), n => n.type === html.exported.Notice && n.props?.notice?.code === 'bad_response')[0]
+  assert.equal(Boolean(notice), true, '坏响应应走 explain 的 bad_response 分支')
+  assert.equal(notice.props.notice.tone, 'error')
+  assert.equal(notice.props.notice.title, '后端回的不是插件响应', '标题应为 errBadResponse（中文键存在且被用上）')
+  assert.equal(
+    notice.props.notice.next,
+    '宿主可能没挂载插件接口。确认插件已装进当前 profile 并重启过宿主，再点「重新检查」。',
+    '下一步应为 errBadResponseNext（中文键存在且被用上）',
+  )
+
+  // 英文键同样存在：换 lang 后标题与下一步取英文份。
+  const english = loadSectionHarness(async () => {}, {
+    lang: 'en',
+    hooks: { 1: null },
+    fetch: async () => ({ ok: true, status: 204, json: async () => { throw new SyntaxError('empty body') } }),
+  })
+  english.render()
+  await flushMicrotasks()
+  const enNotice = findAll(english.render(), n => n.type === english.exported.Notice && n.props?.notice?.code === 'bad_response')[0]
+  assert.equal(Boolean(enNotice), true, '空体坏响应同样走 bad_response 分支')
+  assert.equal(enNotice.props.notice.title, 'The backend reply is not a plugin response', '英文标题应为 errBadResponse（en 键存在且被用上）')
+  assert.equal(
+    enNotice.props.notice.next,
+    'The host may not expose the plugin routes. Make sure the plugin is installed in the current profile and the host was restarted, then press Check again.',
+    '英文下一步应为 errBadResponseNext（en 键存在且被用上）',
+  )
+
+  // 错误信封（ok:false + code）仍按后端 code 翻译，收紧校验不误伤既有错误语义。
+  const writeFailed = loadSectionHarness(async () => {}, {
+    hooks: { 1: null },
+    fetch: async () => ({ ok: false, status: 500, json: async () => ({ ok: false, code: 'write_failed', message: '', data: null }) }),
+  })
+  writeFailed.render()
+  await flushMicrotasks()
+  const notice2 = findAll(writeFailed.render(), n => n.type === writeFailed.exported.Notice && n.props?.notice?.code === 'write_failed')[0]
+  assert.equal(Boolean(notice2), true, '错误信封的 code 应原样透出到 explain')
+  assert.equal(notice2.props.notice.title, '写不进磁盘', 'write_failed 仍翻成 errWrite 文案')
 })

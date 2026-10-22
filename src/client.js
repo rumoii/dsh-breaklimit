@@ -1096,6 +1096,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       errNetworkNext: "确认宿主还在运行，然后重试。",
       errTimeout: "后端太久没有回应",
       errTimeoutNext: "宿主可能正忙，等几秒再重试。",
+      errBadResponse: "后端回的不是插件响应",
+      errBadResponseNext: "宿主可能没挂载插件接口。确认插件已装进当前 profile 并重启过宿主，再点「重新检查」。",
       errMissing: "宿主里找不到这个插件的接口",
       errMissingNext: "确认插件已经装进当前 profile，并且重启过宿主。",
       errOrigin: "请求被宿主拦下了",
@@ -1887,6 +1889,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       errNetworkNext: "Make sure the host is still running, then retry.",
       errTimeout: "The backend took too long to answer",
       errTimeoutNext: "The host may be busy. Wait a few seconds and retry.",
+      errBadResponse: "The backend reply is not a plugin response",
+      errBadResponseNext: "The host may not expose the plugin routes. Make sure the plugin is installed in the current profile and the host was restarted, then press Check again.",
       errMissing: "The host has no endpoint for this plugin",
       errMissingNext: "Make sure the plugin is installed in the current profile and the host was restarted.",
       errOrigin: "The host blocked this request",
@@ -2396,7 +2400,14 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       const code = typeof payload?.code === "string" && payload.code !== "" ? payload.code : `http_${String(response.status)}`
       throw failure(code, response.status, payload?.data ?? null)
     }
-    return payload ?? {}
+    // 信封契约（serve/http.js 的 envelope()）恒有 ok 与 code，成功信封还要求 ok === true。
+    // 缺了就不是插件的响应：插件接口没挂载时宿主回的 HTML、204 空体、被代理改写的 JSON
+    // 都落到这里。当成功只会把空数据交给调用方假成功（词库成空表、状态页停在「正在读取」），
+    // 一律按坏响应拒绝。
+    if (payload?.ok !== true || typeof payload?.code !== "string") {
+      throw failure("bad_response", response.status, null)
+    }
+    return payload
   }
 
   const get = (path) => request(path, { method: "GET" })
@@ -2412,6 +2423,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     switch (code) {
       case "network": return make(T.errNetwork, T.errNetworkNext, "retry")
       case "timeout": return make(T.errTimeout, T.errTimeoutNext, "retry")
+      case "bad_response": return make(T.errBadResponse, T.errBadResponseNext, "refresh")
       case "http_404":
       case "not_found": return make(T.errMissing, T.errMissingNext, null)
       case "http_403":
@@ -2793,8 +2805,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     // 写入串行：PUT 是整表覆盖，串行 + 执行时基于最新列表计算，两处挂载点才不会互相覆盖。
     const commit = (change) => {
       const task = async () => {
-        // 读取失败或数据已标旧时禁止写入：看不清现状就整表覆盖，风险太大。
-        if (state.phase === "failed" || state.stale) return { ok: false, unknown: false, refused: true }
+        // 读取没落定（loading）、失败或数据已标旧时禁止写入：看不清现状就整表覆盖，
+        // 风险太大。loading 窗口按空表算整表，PUT 的覆盖语义会把真实词库全删。
+        if (state.phase !== "ready" || state.stale) return { ok: false, unknown: false, refused: true }
         const next = aliasNextEntries(state.entries, change)
         state.saving = true
         emit()
