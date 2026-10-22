@@ -41,6 +41,9 @@ function seedTarget(home, target, text) {
   fs.writeFileSync(targetPath(home, target), text, 'utf8')
 }
 
+// 与 hashBytes 同口径：内容的完整 sha256 摘要。断言 landing.writtenHash 用。
+const fullHash = (text) => `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`
+
 test('保存后能列出、读取，元数据落在清单里', () => {
   const home = tempHome()
   assert.equal(saveRule(home, 'alpha', 'A body', { name: 'Alpha', target: 'AGENTS.md' }).ok, true)
@@ -227,18 +230,34 @@ test('空正文也是正文：激活建 0 字节文件，取消时删掉', () =>
   assert.equal(readActive(home), null)
 })
 
-test('对照：正文文件丢了，取消时报告并保留落点', () => {
+test('正文文件丢了：writtenHash 认得出落点内容归属，照常处置', () => {
   const home = tempHome()
   saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
   activateRule(home, 'alpha')
   fs.rmSync(ruleTextPath(home, 'alpha'), { force: true })
+
+  // 正文文件没了，但落点里还是我们写进去的字节（writtenHash 对得上）：归属可证，
+  // 插件创建的落点照常删掉，不再把「读不出正文」误判成「内容已被改动」。
+  const off = deactivateRule(home)
+  assert.equal(off.removed, true)
+  assert.equal(off.restored, false)
+  assert.deepEqual(off.skipped, [])
+  assert.equal(fs.existsSync(targetPath(home, 'AGENTS.md')), false)
+})
+
+test('正文文件丢了、落点也被改过：报告并保留落点', () => {
+  const home = tempHome()
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  activateRule(home, 'alpha')
+  fs.rmSync(ruleTextPath(home, 'alpha'), { force: true })
+  fs.writeFileSync(targetPath(home, 'AGENTS.md'), 'user edited', 'utf8')
 
   const off = deactivateRule(home)
   assert.equal(off.removed, false)
   assert.equal(off.restored, false)
   assert.equal(off.skipped.length, 1)
   assert.equal(off.skipped[0].path, targetPath(home, 'AGENTS.md'))
-  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'A body')
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'user edited')
 })
 
 test('非法 target：saveRule 与 activateRule 都拒绝，落到允许列表之外的路径不产生文件', () => {
@@ -313,19 +332,19 @@ test('删除激活中的规则：落点被改过时保留归属，快照仍可�
   assert.equal(removed.ok, true)
   assert.equal(removed.kept, true)
   assert.equal(removed.skipped.length, 1)
-  assert.deepEqual(removed.landingKept, { target: 'AGENTS.md', created: false })
+  assert.deepEqual(removed.landingKept, { target: 'AGENTS.md', created: false, writtenHash: fullHash('A body') })
   assert.deepEqual(listRules(home), [])
   assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'user edited')
   assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'original')
 
   const state = readActiveState(home)
   assert.equal(state.id, null)
-  assert.deepEqual(state.landing, { target: 'AGENTS.md', created: false })
+  assert.deepEqual(state.landing, { target: 'AGENTS.md', created: false, writtenHash: fullHash('A body') })
   assert.equal(fs.existsSync(landingPath(home, state.landing.target)), true)
 
   // 之后的取消激活不清这份归属：没有激活态可注销，清掉只会让快照重新变成孤儿。
   assert.equal(deactivateRule(home).ok, true)
-  assert.deepEqual(readActiveState(home).landing, { target: 'AGENTS.md', created: false })
+  assert.deepEqual(readActiveState(home).landing, { target: 'AGENTS.md', created: false, writtenHash: fullHash('A body') })
   assert.equal(fs.existsSync(landingPath(home, 'AGENTS.md')), true)
 
   // 归属还在，同一落点上再激活一条时沿用这份快照，不拿当前内容把它冲掉。

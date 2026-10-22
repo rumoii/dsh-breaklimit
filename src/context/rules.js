@@ -198,12 +198,25 @@ function invalidTargetFailure(target) {
   )
 }
 
-/** 落点快照。字段不全或类型不对时返回 null——读不出来就当没有，保守处理。 */
+/** writtenHash 的持久化格式：`hashBytes` 的完整输出（`sha256:<64 位十六进制>`）。 */
+const WRITTEN_HASH_RE = /^sha256:[0-9a-f]{64}$/u
+
+/**
+ * 落点快照。字段不全或类型不对时返回 null——读不出来就当没有，保守处理。
+ *
+ * `writtenHash` 是我们写进落点的字节哈希，比对「落点还是不是我们写的」以它为基线。
+ * 旧清单没有这个字段、或值不是合法摘要，一律解析成 null：基线编不出来，比对退回
+ * 与活正文比较的旧行为。
+ */
 function normalizeLanding(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
   if (!isValidTarget(raw.target)) return null
   if (typeof raw.created !== 'boolean') return null
-  return { target: raw.target, created: raw.created }
+  return {
+    target: raw.target,
+    created: raw.created,
+    writtenHash: WRITTEN_HASH_RE.test(raw.writtenHash) ? raw.writtenHash : null,
+  }
 }
 
 /**
@@ -450,10 +463,19 @@ function activeRuleTextOrNull(home) {
 /**
  * 保存（新建或覆盖）一条规则。
  *
- * 正在激活的规则同步落点之前先读落点当前内容，与**上一次写进去的正文**（保存前的
- * 旧正文）比较：一致才同步（`landingSynced`）；不一致说明落点被外部改过，跳过同步、
- * 保留外部内容（`landingStale`）。旧正文读不出来（没有正文文件）时同样按不确定处理，
- * 不覆盖落点。
+ * 正在激活的规则同步落点之前先读落点当前字节，与**我们写进落点的字节哈希**
+ * （`index.landing.writtenHash`）比对：一致才同步（`landingSynced`）；不一致说明落点
+ * 被外部改过，跳过同步、保留外部内容（`landingStale`）。旧清单记录没有 writtenHash
+ * 时退回拿保存前的旧正文比对（旧正文读不出来同样按不确定处理）。哈希基线的意义：
+ * 一次同步失败（正文与清单已写新、落点还是旧的）之后，下一次保存仍认得出落点里是
+ * 我们写的内容，能接着同步，不会永久卡在 stale。
+ *
+ * 同步成功后把新的字节哈希随清单持久化；哈希记录写不进去就把落点退回同步前的字节，
+ * 保住「哈希与落点内容同进退」，同样不制造永久 stale。
+ *
+ * 激活中的规则落点不迁移：正文写进 `index.landing` 记录的落点（物理事实），返回的
+ * `meta.target` 报实际生效的落点；与请求的 target 不一致时 `landingMoved` 为 true
+ * （语义：本次保存请求的落点与实际生效落点不同）。
  *
  * @returns {{ ok: true, id: string, meta: { name: string, target: string },
  *   landingSynced: boolean, landingStale: boolean, landingMoved: boolean, revision: number }
@@ -509,13 +531,18 @@ function saveRuleLocked(home, id, text, meta) {
     })
   }
 
+  // 激活中的规则落点不迁移：正文写进 index.landing 记录的落点（物理事实），返回的
+  // meta.target 也报它；请求的 target 与实际生效落点不一致时 landingMoved 为 true。
+  const effectiveTarget = index.active === id
+    ? (index.landing?.target ?? normalized.target)
+    : normalized.target
+
   // 正在激活的规则被改正文时，同步落点；顺序是「清单 → 落点」，因为这一步失败留下
   // 的是「清单已记新正文、落点仍是旧的」，下一次保存或取消激活能看到并处理。
   let landingSynced = false
   let landingStale = false
   if (index.active === id) {
-    const target = index.landing?.target ?? normalized.target
-    const current = readTargetState(home, target)
+    const current = readTargetState(home, effectiveTarget)
     if (current.kind === 'unreadable') {
       // 读不到落点就不同步、也不判「被改过」：把事实报出去，内容一个字节不动。
       return failure('landing_unreadable', `写入文件读不到，未做同步：${messageOf(current.error)}`, {
@@ -524,20 +551,44 @@ function saveRuleLocked(home, id, text, meta) {
         landingSynced: false,
       })
     }
+    // 「我们写进落点的是什么」以 writtenHash 为基线。活正文当基线时，一次同步失败后
+    // 正文与落点分了家，之后每次保存都判「被改过」，永远恢复不了。
+    const writtenHash = index.landing?.writtenHash ?? null
     const previousBytes = previousText === null ? null : Buffer.from(previousText, 'utf8')
-    const unchanged = previousBytes !== null
-      && current.kind === 'ok'
-      && current.bytes.equals(previousBytes)
+    const unchanged = current.kind === 'ok' && (writtenHash === null
+      ? previousBytes !== null && current.bytes.equals(previousBytes)
+      : hashBytes(current.bytes) === writtenHash)
     if (unchanged) {
       const nextBytes = Buffer.from(text, 'utf8')
       if (!current.bytes.equals(nextBytes)) {
         try {
-          atomicWriteBytes(targetPath(home, target), nextBytes)
+          atomicWriteBytes(targetPath(home, effectiveTarget), nextBytes)
         } catch (error) {
           return failure('landing_write_failed', `同步写入文件失败：${messageOf(error)}`, {
             bodyWritten: true,
             indexWritten: true,
             landingSynced: false,
+          })
+        }
+      }
+      // 同步成功才把新的字节哈希写进清单：哈希先落盘、落点后写的话，落点一失败基线
+      // 就指着没写进去的内容，比对从此对不上。
+      if (index.landing !== null) {
+        try {
+          revision = writeIndex(home, {
+            ...index,
+            rules,
+            landing: { ...index.landing, writtenHash: hashBytes(nextBytes) },
+          }, revision)
+        } catch (error) {
+          // 哈希记录写不进去就把落点退回同步前的字节：writtenHash 与落点内容必须同
+          // 进退，否则下一次保存会把我们自己写的内容误判成外部改动，永久 stale。
+          const landingRestored = restoreLanding(home, effectiveTarget, current.bytes)
+          return indexWriteFailure(error, '记录落点内容哈希', {
+            bodyWritten: true,
+            indexWritten: true,
+            landingSynced: false,
+            landingRestored,
           })
         }
       }
@@ -549,10 +600,10 @@ function saveRuleLocked(home, id, text, meta) {
   return {
     ok: true,
     id,
-    meta: { name: normalized.name, target: normalized.target },
+    meta: { name: normalized.name, target: effectiveTarget },
     landingSynced,
     landingStale,
-    landingMoved: false,
+    landingMoved: effectiveTarget !== normalized.target,
     revision,
   }
 }
@@ -566,17 +617,25 @@ function readTargetState(home, target) {
   return readBytesStrict(targetPath(home, target))
 }
 
+/** 已经算好的内容摘要（如 `landing.writtenHash`）：直接截短成指纹，不重算。 */
+function prehashed(digest) {
+  return { digest }
+}
+
 /**
  * 落点内容指纹（sha256 前 16 位）。用于告诉用户「被改动」到底差在哪：
  * `expected` 是插件认为该文件应当有的内容，`actual` 是它现在的内容。
  * 文本拿不到就记 null，不编一个哈希出来。
  */
 function fingerprint(value) {
-  const digest = typeof value === 'string'
-    ? hashText(value)
-    : Buffer.isBuffer(value)
-      ? hashBytes(value)
-      : null
+  const digest = value !== null && typeof value === 'object' && !Buffer.isBuffer(value)
+    && typeof value.digest === 'string'
+    ? value.digest
+    : typeof value === 'string'
+      ? hashText(value)
+      : Buffer.isBuffer(value)
+        ? hashBytes(value)
+        : null
   if (digest === null) return null
   // hashText/hashBytes 同格式：同一内容的文本与字节表示给出同一个值，两侧可比。
   // 只要十六进制那段的前 16 位。
@@ -591,9 +650,13 @@ function skipEntry(file, reason, expected, actual) {
 /**
  * 处置一个落点快照。
  *
+ * 「落点内容还是不是我们写的」以 `landing.writtenHash`（写进落点的字节哈希）为基线；
+ * 旧清单记录没有它时退回拿 `ourText`（活正文）比对。判定与报出去的 expected 指纹
+ * 都跟基线走。
+ *
  * @param {string} home - $DSH_HOME。
- * @param {{ target: string, created: boolean } | null} landing - 快照。
- * @param {string | null} ourText - 我们当前认为落点里应当是的那份正文。
+ * @param {{ target: string, created: boolean, writtenHash?: string | null } | null} landing - 快照。
+ * @param {string | null} ourText - 旧记录（无 writtenHash）的比对基线：我们认为落点里应当是的正文。
  * @returns {{ removed: boolean, restored: boolean,
  *   skipped: Array<{ path: string, reason: string, expected: string | null, actual: string | null }> }}
  */
@@ -603,10 +666,12 @@ function settleLanding(home, landing, ourText) {
   const file = targetPath(home, landing.target)
   const current = readTargetState(home, landing.target)
   const ourBytes = typeof ourText === 'string' ? Buffer.from(ourText, 'utf8') : null
+  const writtenHash = landing.writtenHash ?? null
+  const expected = writtenHash === null ? ourText : prehashed(writtenHash)
 
   if (current.kind === 'unreadable') {
     // 读不到就什么都不动：它可能还在、也可能已被改动，两种都不许推断。
-    result.skipped.push(skipEntry(file, '当前内容读不到，保留原样', ourText, null))
+    result.skipped.push(skipEntry(file, '当前内容读不到，保留原样', expected, null))
     return result
   }
   if (current.kind === 'missing') {
@@ -615,9 +680,12 @@ function settleLanding(home, landing, ourText) {
     return result
   }
   const currentBytes = current.bytes
-  if (ourBytes === null || !currentBytes.equals(ourBytes)) {
+  const ours = writtenHash === null
+    ? ourBytes !== null && currentBytes.equals(ourBytes)
+    : hashBytes(currentBytes) === writtenHash
+  if (!ours) {
     // 两侧都记：用户能看到插件写进去的是什么、现在是什么。
-    result.skipped.push(skipEntry(file, '内容已被改动，保留原样', ourText, currentBytes))
+    result.skipped.push(skipEntry(file, '内容已被改动，保留原样', expected, currentBytes))
     return result
   }
   if (landing.created) {
@@ -653,21 +721,41 @@ function settleLanding(home, landing, ourText) {
 }
 
 /**
- * 外部改动副本：把即将被激活覆盖、又不在任何插件副本里的字节存一份。
- * 与快照同目录；名字带目标名与时间戳，不与 landings/<target>.txt 抢入口。
+ * landings/ 里的带时间戳副本名：`<target>.<用途>-<时间戳>-<pid>-<序号>.txt`。
+ * 与快照同目录；不与 landings/<target>.txt 抢入口。
  */
-function writeExternalCopy(home, target, bytes) {
-  fs.mkdirSync(landingsDir(home), { recursive: true })
+function landingCopyPath(home, target, purpose) {
   const now = new Date()
   const pad = value => String(value).padStart(2, '0')
   const stamp = `${String(now.getFullYear())}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
     + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
   writeSequence += 1
-  const file = path.join(
+  return path.join(
     landingsDir(home),
-    `${target}.external-${stamp}-${process.pid.toString(36)}-${String(writeSequence)}.txt`,
+    `${target}.${purpose}-${stamp}-${process.pid.toString(36)}-${String(writeSequence)}.txt`,
   )
+}
+
+/**
+ * 外部改动副本：把即将被激活覆盖、又不在任何插件副本里的字节存一份。
+ * 与快照同目录；名字带目标名与时间戳，不与 landings/<target>.txt 抢入口。
+ */
+function writeExternalCopy(home, target, bytes) {
+  fs.mkdirSync(landingsDir(home), { recursive: true })
+  const file = landingCopyPath(home, target, 'external')
   atomicWriteBytes(file, bytes)
+  return file
+}
+
+/**
+ * 孤儿快照保留副本：landings/<target> 有快照、归属却不在（index.landing 指向别处或
+ * 已清空）时，把它搬成带时间戳的副本，再让新快照进 canonical 路径。那份孤儿快照是
+ * 「某个落点首次接管前原文」的唯一副本，被新快照冲掉就永久丢了。
+ */
+function keepOrphanSnapshot(home, target) {
+  fs.mkdirSync(landingsDir(home), { recursive: true })
+  const file = landingCopyPath(home, target, 'kept')
+  fs.renameSync(landingPath(home, target), file)
   return file
 }
 
@@ -716,7 +804,9 @@ function rollbackIndex(home, previousIndex, expectedRevision) {
  *
  * 同落点切换时，`landings/<target>.txt` 保存的是**插件第一次接管该落点时的原文**：
  * 只要这份快照还在就沿用，不拿当前落点内容覆盖它。返回值里的 `snapshotKept` 说明
- * 本次是否沿用了已有快照，供上层把提示语说准。
+ * 本次是否沿用了已有快照，供上层把提示语说准。没归属的孤儿快照（切换落点时旧落点
+ * 被判 skipped，快照失去归属）不被新快照冲掉：先搬成带时间戳的保留副本，路径从
+ * 返回值的 `keptCopy` 报出。
  *
  * 激活会覆盖落点上的外部改动（这就是激活的语义），但不丢字节：被覆盖的内容不属于
  * 任何插件副本（≠ 新正文、≠ 快照原文、≠ 上一条激活规则的正文）时，先存副本再覆盖，
@@ -777,17 +867,31 @@ function activateRuleLocked(home, id) {
     return failure('snapshot_unreadable', `激活前原文快照读不到，激活已取消：${messageOf(snapshotState.error)}`)
   }
   const snapshotKept = slotOwned && snapshotState.kind === 'ok'
+  const nextBytes = Buffer.from(loaded.text, 'utf8')
+  // writtenHash：我们写进落点的字节哈希。内容本就一致、没重写也算——落点里就是它。
+  const writtenHash = hashBytes(nextBytes)
   const landing = sameRuleSameTarget || snapshotKept
-    ? index.landing
-    : { target: meta.target, created: existing === null }
+    ? { ...index.landing, writtenHash }
+    : { target: meta.target, created: existing === null, writtenHash }
   let snapshotWritten = false
+  let keptCopy = null
   if (!sameRuleSameTarget && !snapshotKept && existing !== null) {
+    // canonical 路径上若有快照却没归属（slotOwned 为 false），它是孤儿：切换落点时
+    // 旧落点被判 skipped，丢掉归属的「首次接管前原文」唯一副本。先搬成保留副本再写
+    // 新快照，不许拿新快照把它冲掉；搬不走就取消激活，宁可不写。
+    if (snapshotState.kind === 'ok') {
+      try {
+        keptCopy = keepOrphanSnapshot(home, meta.target)
+      } catch (error) {
+        return failure('snapshot_failed', `保留无归属的旧快照失败，激活已取消：${messageOf(error)}`)
+      }
+    }
     try {
       fs.mkdirSync(landingsDir(home), { recursive: true })
       atomicWriteBytes(landingPath(home, meta.target), existing)
       snapshotWritten = true
     } catch (error) {
-      return failure('snapshot_failed', `保存激活前原文失败：${messageOf(error)}`)
+      return failure('snapshot_failed', `保存激活前原文失败：${messageOf(error)}`, { keptCopy })
     }
   }
 
@@ -815,10 +919,9 @@ function activateRuleLocked(home, id) {
   } catch (error) {
     // 意图没落盘，落点还没动。本次快照没有主人，删掉。
     discardSnapshot(home, meta.target, snapshotWritten)
-    return indexWriteFailure(error, '写入激活意图')
+    return indexWriteFailure(error, '写入激活意图', { keptCopy })
   }
 
-  const nextBytes = Buffer.from(loaded.text, 'utf8')
   // 被覆盖的字节不在任何插件副本里时先存副本（见 activateRule 的 doc）。
   let externalCopy = null
   if (existing !== null && !existing.equals(nextBytes)) {
@@ -835,7 +938,7 @@ function activateRuleLocked(home, id) {
         const rolledBack = rollbackIndex(home, index, intentRevision)
         discardSnapshot(home, meta.target, snapshotWritten)
         const note = rolledBack ? '' : '；清单回滚失败，激活意图仍留在 pendingActivation'
-        return failure('external_copy_failed', `保存落点外部改动副本失败，激活已取消：${messageOf(error)}${note}`, { rolledBack })
+        return failure('external_copy_failed', `保存落点外部改动副本失败，激活已取消：${messageOf(error)}${note}`, { rolledBack, keptCopy })
       }
     }
   }
@@ -847,7 +950,7 @@ function activateRuleLocked(home, id) {
     const rolledBack = rollbackIndex(home, index, intentRevision)
     discardSnapshot(home, meta.target, snapshotWritten)
     const note = rolledBack ? '' : '；清单回滚失败，激活意图仍留在 pendingActivation'
-    return failure('landing_write_failed', `写入 ${file} 失败：${messageOf(error)}${note}`, { rolledBack })
+    return failure('landing_write_failed', `写入 ${file} 失败：${messageOf(error)}${note}`, { rolledBack, keptCopy })
   }
 
   let revision
@@ -858,8 +961,37 @@ function activateRuleLocked(home, id) {
     // 「落点已改、清单说没激活」，这正是 #4 要消灭的状态。
     const landingRestored = restoreLanding(home, meta.target, existing)
     if (error?.code === 'conflict') {
-      // 外部改过清单：不覆盖它，落点恢复后如实报冲突。
-      return failure('conflict', `提交激活失败：${messageOf(error)}`, { landingRestored })
+      // 外部写者改过清单。读回来看 pendingActivation 还是不是本次意图：是就撤销这次
+      // 激活意图（只动本次激活写进清单的字段，不覆盖外部写者的其他改动）；不是就
+      // 不再碰它，把真实状态（当前激活是谁、落点已还原）原样报出去。
+      const now = readIndex(home)
+      const intentStillOurs = now.kind === 'ok'
+        && now.pendingActivation !== null
+        && now.pendingActivation.id === id
+        && now.pendingActivation.target === meta.target
+      const rolledBack = intentStillOurs
+        ? rollbackIndex(home, {
+            ...now,
+            rules: now.rules.map(rule => (rule.id === id
+              ? { ...rule, activatedAt: index.rules.find(item => item.id === id)?.activatedAt ?? null }
+              : rule)),
+            active: index.active,
+            landing: index.landing,
+            pendingActivation: null,
+          }, now.revision)
+        : false
+      // activeNow 是处置之后的真实激活态：回滚成功就是复原后的值，否则是外部写者留下的值。
+      const activeNow = rolledBack ? index.active : (now.kind === 'ok' ? now.active : null)
+      let note
+      if (rolledBack) note = '；清单里的激活意图已撤销，状态已复原'
+      else if (now.kind !== 'ok') note = '；清单当前不可用，无法回滚，落点已还原'
+      else if (intentStillOurs) note = `；清单回滚失败，激活意图仍留在 pendingActivation；当前激活：${activeNow ?? '无'}，落点已还原`
+      else note = `；清单已被外部改动，未回滚；当前激活：${activeNow ?? '无'}，落点已还原`
+      return failure('conflict', `提交激活失败：${messageOf(error)}${note}`, {
+        landingRestored,
+        rolledBack,
+        activeNow,
+      })
     }
     const rolledBack = landingRestored && rollbackIndex(home, index, intentRevision)
     const note = rolledBack ? '' : '；清单回滚失败，激活意图仍留在 pendingActivation'
@@ -881,6 +1013,7 @@ function activateRuleLocked(home, id) {
     previousLanding,
     snapshotKept,
     externalCopy,
+    keptCopy,
     revision,
   }
 }

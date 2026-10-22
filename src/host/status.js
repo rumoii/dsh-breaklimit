@@ -252,8 +252,8 @@ export function buildStatus(ctx, config, runtime) {
  * 保存成功后的一句话。
  *
  * 这一批只有两种结局：规则正被激活，正文同时写进写入文件；或者规则没激活，正文只
- * 进规则库。`landingStale` 与 `landingMoved` 恒为 false（外部改动检测与挪落点都不
- * 在这一版里），没有第三种分支可走，所以不写。
+ * 进规则库。`landingStale`（落点被外部改过、本次跳过同步）与 `landingMoved`（本次
+ * 保存请求的落点与实际生效落点不同）由返回值字段单独报，这句话不替它们分支。
  */
 export function savedMessage(saved) {
   return saved.landingSynced === true
