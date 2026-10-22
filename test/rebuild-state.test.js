@@ -9,6 +9,9 @@
 //   盘上多一处改动              →  拒绝，理由指向「还含有其他改动」
 //   声明哈希不认这份原文        →  拒绝
 //   哈希表采自另一棵树          →  git 来源拒绝，快照来源照采纳（快照自带证明）
+//   一个都没采纳                →  不写清单，返回失败语义（退出码 2），已有记录与备份原样保留
+//   部分采纳                    →  照写清单，退出码 1，并列出未采纳清单
+//   备份                        →  带时间戳、永不覆盖，第二次重建后第一次的备份仍在
 //   重建之后                    →  预检认成 applied，apply 不再写盘，revert 还能还原
 
 import assert from 'node:assert/strict'
@@ -21,14 +24,15 @@ import test from 'node:test'
 import { hashText, readTextOrNull } from '../src/patch/fsx.js'
 import { createLock } from '../src/patch/lock.js'
 import { preflight } from '../src/patch/preflight.js'
-import { readState } from '../src/patch/state.js'
+import { readState, statePath } from '../src/patch/state.js'
 import { applyPatches, revertPatches } from '../src/patch/transaction.js'
 import { replaceVariantsByPath } from '../src/patch/index.js'
-import { judgeAdoption, rebuildState } from '../tools/rebuild-state.mjs'
+import { adoptionOutcome, backupTarget, judgeAdoption, rebuildState } from '../tools/rebuild-state.mjs'
 
 const PATCH_ID = 'T-01'
 const ORIGINAL = 'VALUE = 2000\n'
 const PATCHED = 'VALUE = 20000\n'
+const ORIGINAL_B = 'OTHER = 1\n'
 const HEAD_COMMIT = 'abc123'
 
 function patchSet() {
@@ -42,6 +46,35 @@ function patchSet() {
 
 function hashTable() {
   return { [PATCH_ID]: { 'a.txt': hashText(ORIGINAL) } }
+}
+
+function patchSetTwo() {
+  return [{
+    id: PATCH_ID,
+    title: '测试补丁',
+    kind: 'replace',
+    targets: [
+      { path: 'a.txt', before: 'VALUE = 2000', after: 'VALUE = 20000', expectHits: 1 },
+      { path: 'b.txt', before: 'OTHER = 1', after: 'OTHER = 2', expectHits: 1 },
+    ],
+  }]
+}
+
+function hashTableTwo() {
+  return { [PATCH_ID]: { 'a.txt': hashText(ORIGINAL), 'b.txt': hashText(ORIGINAL_B) } }
+}
+
+/** git 读取假件：落盘与备份用例不碰真实仓库，只验证写不写、怎么备份、退出码是多少。 */
+function fakeGit(headFiles) {
+  return (args) => {
+    if (args[0] === 'rev-parse') return `${HEAD_COMMIT}\n`
+    if (args[0] === 'show' && args[1].startsWith('HEAD:')) {
+      const relative = args[1].slice('HEAD:'.length)
+      if (Object.hasOwn(headFiles, relative)) return headFiles[relative]
+      throw new Error(`no such path: ${relative}`)
+    }
+    throw new Error(`unexpected git call: ${args.join(' ')}`)
+  }
 }
 
 /** 一份各项都成立的输入，用例只改需要打歪的那一项。 */
@@ -110,6 +143,125 @@ test('快照自身等于原文时照采纳，不受哈希表提交号影响', ()
 
   assert.equal(adopted.accepted, true)
   assert.equal(adopted.source, 'snapshot')
+})
+
+test('退出码判定：零采纳不写退出 2，部分采纳写退出 1，全部采纳写退出 0', () => {
+  assert.deepEqual(adoptionOutcome(0, 2), { write: false, exitCode: 2 })
+  assert.deepEqual(adoptionOutcome(1, 1), { write: true, exitCode: 1 })
+  assert.deepEqual(adoptionOutcome(3, 0), { write: true, exitCode: 0 })
+})
+
+test('一个都没采纳时不写清单，返回失败语义，不留下任何写入', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', ORIGINAL) // 与 HEAD 相同：这份改动不在，全部目标未采纳
+
+  const result = rebuildState({
+    hostRoot: root,
+    home,
+    patches: patchSet(),
+    hashes: hashTable(),
+    manifest: { dsh: { commit: HEAD_COMMIT } },
+    git: fakeGit({ 'a.txt': ORIGINAL }),
+  })
+
+  assert.equal(result.written, false)
+  assert.equal(result.exitCode, 2)
+  assert.deepEqual(Object.keys(result.accepted), [])
+  assert.equal(result.rejected.length, 1)
+  assert.equal(fs.existsSync(statePath(home)), false, '零采纳时不得生成 state.json')
+  assert.equal(fs.existsSync(path.join(home, 'breaklimit')), false, '零采纳时不该留下任何写入')
+})
+
+test('零采纳时已有的 state.json 与旧备份原样保留', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', ORIGINAL)
+  write(home, 'breaklimit/state.json', '{"keep":"record"}\n')
+  write(home, 'breaklimit/state.json.bak-OLD', '{"keep":"backup"}\n')
+
+  const result = rebuildState({
+    hostRoot: root,
+    home,
+    patches: patchSet(),
+    hashes: hashTable(),
+    manifest: { dsh: { commit: HEAD_COMMIT } },
+    git: fakeGit({ 'a.txt': ORIGINAL }),
+  })
+
+  assert.equal(result.written, false)
+  assert.equal(result.exitCode, 2)
+  assert.equal(read(home, 'breaklimit/state.json'), '{"keep":"record"}\n', '已有的恢复记录不得被毁掉')
+  const backups = fs.readdirSync(path.join(home, 'breaklimit')).filter((name) => name.startsWith('state.json.bak'))
+  assert.deepEqual(backups, ['state.json.bak-OLD'], '零采纳时不得新增或覆盖任何备份')
+  assert.equal(read(home, 'breaklimit/state.json.bak-OLD'), '{"keep":"backup"}\n')
+})
+
+test('备份永不覆盖已有文件：冲突时取下一个名字', () => {
+  const home = tempDir()
+  const destination = statePath(home)
+  fs.mkdirSync(path.dirname(destination), { recursive: true })
+  write(home, 'breaklimit/state.json.bak-TEST', 'first')
+  write(home, 'breaklimit/state.json.bak-TEST-2', 'second')
+
+  assert.equal(backupTarget(destination, 'TEST'), `${destination}.bak-TEST-3`, '冲突时必须取下一个名字')
+  assert.equal(backupTarget(destination, 'NEXT'), `${destination}.bak-NEXT`, '不冲突时用带时间戳的名字')
+  assert.equal(read(home, 'breaklimit/state.json.bak-TEST'), 'first', '已有备份不得被覆盖')
+  assert.equal(read(home, 'breaklimit/state.json.bak-TEST-2'), 'second', '已有备份不得被覆盖')
+})
+
+test('第二次重建后第一次的备份仍在，两份备份互不覆盖', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', PATCHED)
+  write(home, 'breaklimit/state.json', 'OLD-RECORD')
+
+  const args = {
+    hostRoot: root,
+    home,
+    patches: patchSet(),
+    hashes: hashTable(),
+    manifest: { dsh: { commit: HEAD_COMMIT } },
+    git: fakeGit({ 'a.txt': ORIGINAL }),
+  }
+  const first = rebuildState(args)
+  const second = rebuildState(args)
+
+  assert.ok(first.backup !== null && second.backup !== null)
+  assert.notEqual(first.backup, second.backup, '两次备份必须落在两个名字上')
+  assert.equal(fs.readFileSync(first.backup, 'utf8'), 'OLD-RECORD', '第一次的备份必须原样保留')
+  assert.equal(
+    JSON.parse(fs.readFileSync(second.backup, 'utf8')).operationId,
+    path.basename(first.dir),
+    '第二次备份的是第一次重建出的清单，不是覆盖后的残骸',
+  )
+  const backups = fs.readdirSync(path.join(home, 'breaklimit')).filter((name) => name.startsWith('state.json.bak'))
+  assert.equal(backups.length, 2, '两次重建必须留下两份备份')
+})
+
+test('部分采纳时照写清单，退出码 1，并列出未采纳清单', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', PATCHED) // 本方写入 → 采纳
+  write(root, 'b.txt', ORIGINAL_B) // 与原文相同，这份改动不在 → 拒绝
+
+  const result = rebuildState({
+    hostRoot: root,
+    home,
+    patches: patchSetTwo(),
+    hashes: hashTableTwo(),
+    manifest: { dsh: { commit: HEAD_COMMIT } },
+    git: fakeGit({ 'a.txt': ORIGINAL, 'b.txt': ORIGINAL_B }),
+  })
+
+  assert.equal(result.written, true)
+  assert.equal(result.exitCode, 1)
+  assert.deepEqual(Object.keys(result.accepted), ['a.txt'])
+  assert.deepEqual(result.rejected.map(([relative]) => relative), ['b.txt'], '未采纳清单必须留在返回结构里')
+
+  const persisted = readState(home)
+  assert.equal(persisted.kind, 'ok')
+  assert.deepEqual(Object.keys(persisted.state.files), ['a.txt'], '清单只记采纳的文件')
 })
 
 test('重建之后预检认成 applied，apply 不再写盘，revert 还原成原文', (t) => {

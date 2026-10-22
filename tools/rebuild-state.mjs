@@ -20,7 +20,9 @@
 // 逐文件哈希偶然相符也不能当证据。
 //
 // 只写 $DSH_HOME/breaklimit/ 下的内容：新建一个合并事务目录与一份新清单，覆盖清单前
-// 先备份成 state.json.bak。宿主源码一个字节都不改，旧事务目录一个都不删。
+// 先备份成 state.json.bak-<时间戳>，已有备份永不覆盖。一个文件都没采纳时拒绝写清单：
+// 那等于把「没有任何补丁」记成事实，已应用的宿主补丁从此退不回去。
+// 宿主源码一个字节都不改，旧事务目录一个都不删。
 //
 // 用法: node tools/rebuild-state.mjs <宿主根>
 
@@ -96,7 +98,37 @@ export function judgeAdoption({ head, current, snapshot, declaredHash, headCommi
 }
 
 /**
- * 逐个目标判定，并写出合并快照目录与新清单。
+ * 落盘与退出码判定。纯函数：不读盘、不写盘。
+ *
+ * 一个都没采纳时写清单，等于把「没有任何补丁」记成事实，所以拒绝写入、按失败退出（2）；
+ * 有未采纳但至少采纳一个时照写清单，但退出码 1 提醒还有目标没进来；全部采纳才是
+ * 干净的成功（0）。
+ *
+ * @param {number} acceptedCount 采纳的目标数。
+ * @param {number} rejectedCount 未采纳的目标数。
+ * @returns {{ write: boolean, exitCode: 0 | 1 | 2 }}
+ */
+export function adoptionOutcome(acceptedCount, rejectedCount) {
+  if (acceptedCount === 0) return { write: false, exitCode: 2 }
+  return { write: true, exitCode: rejectedCount > 0 ? 1 : 0 }
+}
+
+/**
+ * 备份落点：文件名带时间戳，与已有文件冲突时取下一个名字。旧清单的备份是恢复凭证，
+ * 已有的备份文件一个都不能覆盖。导出是为了让测试直接验证取名规则。
+ *
+ * @param {string} destination 清单路径。
+ * @param {string} [stamp] 时间戳，默认取当前时刻。
+ * @returns {string} 不会覆盖任何已有文件的备份路径。
+ */
+export function backupTarget(destination, stamp = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15)) {
+  let candidate = `${destination}.bak-${stamp}`
+  for (let n = 2; fs.existsSync(candidate); n += 1) candidate = `${destination}.bak-${stamp}-${n}`
+  return candidate
+}
+
+/**
+ * 逐个目标判定，并写出合并快照目录与新清单；一个都没采纳时什么都不写。
  *
  * @param {object} options
  * @param {string} options.hostRoot - 宿主根目录绝对路径。
@@ -105,7 +137,9 @@ export function judgeAdoption({ head, current, snapshot, declaredHash, headCommi
  * @param {Record<string, Record<string, string>> | null} [options.hashes] - 预哈希表。
  * @param {object | null} [options.manifest] - 哈希表清单。
  * @param {(args: string[]) => string} [options.git] - git 读取实现，参数已含 -C 之前的调用形式。
- * @returns {{ destination: string, dir: string, accepted: Array, rejected: Array, snapshotCount: number, headCount: number }}
+ * @returns {{ destination: string, dir: string, accepted: Array, rejected: Array, snapshotCount: number, headCount: number,
+ *   written: boolean, backup: string | null, exitCode: number }}
+ *   一个都没采纳时 written 为 false、exitCode 为 2，清单不落盘。
  */
 export function rebuildState({
   hostRoot,
@@ -184,17 +218,25 @@ export function rebuildState({
   }
 
   const destination = statePath(home)
-  if (fs.existsSync(destination)) fs.copyFileSync(destination, `${destination}.bak`)
+  const outcome = adoptionOutcome(Object.keys(accepted).length, rejected.length)
 
-  writeState(home, {
-    version: 1,
-    operationId,
-    phase: 'committed',
-    updatedAt: new Date().toISOString(),
-    dsh: DSH_TARGET,
-    transaction: dir,
-    files,
-  })
+  let backup = null
+  if (outcome.write) {
+    if (fs.existsSync(destination)) {
+      backup = backupTarget(destination)
+      fs.copyFileSync(destination, backup)
+    }
+
+    writeState(home, {
+      version: 1,
+      operationId,
+      phase: 'committed',
+      updatedAt: new Date().toISOString(),
+      dsh: DSH_TARGET,
+      transaction: dir,
+      files,
+    })
+  }
 
   const snapshotCount = Object.values(accepted).filter(record => record.source === 'snapshot').length
   return {
@@ -204,6 +246,9 @@ export function rebuildState({
     rejected,
     snapshotCount,
     headCount: Object.keys(accepted).length - snapshotCount,
+    written: outcome.write,
+    backup,
+    exitCode: outcome.exitCode,
   }
 }
 
@@ -226,8 +271,14 @@ if (invokedDirectly) {
   }
 
   const total = Object.keys(result.accepted).length
-  console.log(`已写 ${result.destination}（旧清单备份为 state.json.bak）`)
-  console.log(`合并快照目录 ${result.dir}`)
+  if (result.written) {
+    const backupNote = result.backup !== null ? `（旧清单备份为 ${path.basename(result.backup)}）` : ''
+    console.log(`已写 ${result.destination}${backupNote}`)
+    console.log(`合并快照目录 ${result.dir}`)
+  } else {
+    console.log(`未写 ${result.destination}：一个文件都没有采纳，写入只会把「没有任何补丁」记成事实`)
+  }
   console.log(`采纳 ${String(total)} 个文件（快照 ${String(result.snapshotCount)} 个，git HEAD ${String(result.headCount)} 个），未采纳 ${String(result.rejected.length)} 个`)
   for (const [relative, reason] of result.rejected) console.log(`  未采纳 ${relative}：${reason}`)
+  if (result.exitCode !== 0) process.exit(result.exitCode)
 }
