@@ -70,8 +70,9 @@ function validateBudgets(input, issues) {
         issues.push({ message: `未知预算键，只接受 ${BUDGET_KEYS.join(' / ')}`, path: ['budgets', tier, key] })
         continue
       }
-      if (!Number.isInteger(raw) || raw <= 0) {
-        issues.push({ message: '应为正整数', path: ['budgets', tier, key] })
+      const min = key === 'maxDepth' ? 0 : 1
+      if (!Number.isInteger(raw) || raw < min) {
+        issues.push({ message: min === 0 ? '应为非负整数' : '应为正整数', path: ['budgets', tier, key] })
         continue
       }
       merged[tier][key] = raw

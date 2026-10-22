@@ -76,6 +76,13 @@ test('预算覆盖只改指定档，其余档与其余键保持默认', () => {
   assert.deepEqual(result.value.budgets.recommended, MODE_BUDGETS.recommended)
 })
 
+test('maxDepth 允许 0（宿主用它关闭委派），其余预算键仍要求正整数', () => {
+  const zero = validate({ budgets: { recommended: { maxDepth: 0 } } })
+  assert.equal(zero.value.budgets.recommended.maxDepth, 0)
+  const negative = validate({ budgets: { recommended: { maxDepth: -1 } } })
+  assert.deepEqual(negative.issues[0].path, ['budgets', 'recommended', 'maxDepth'])
+})
+
 test('预算写错名字或多给键直接报，不静默忽略', () => {
   const result = validate({
     budgets: {

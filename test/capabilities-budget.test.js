@@ -5,6 +5,11 @@ import test from 'node:test'
 
 import { MODE_BUDGETS, applyModeBudget, recheckBudget } from '../src/host/capabilities.js'
 
+// 必须是本文件的第一个用例：提交状态是模块级单例，前面一旦提交过，这里就不再是「没提交」。
+test('复核：没有提交记录时返回 null', () => {
+  assert.equal(recheckBudget({ get: () => undefined }), null)
+})
+
 function slot(value) {
   return { get() { return value } }
 }
@@ -146,7 +151,7 @@ test('复核：服务就绪且读数一致后，unverified 不再挂着', async 
   assert.equal(applied.unverified.length, 1)
 
   const ready = { get: name => limitsFor(MODE_BUDGETS.recommended)[name] }
-  const checked = recheckBudget(ready, applied)
+  const checked = recheckBudget(ready)
   assert.deepEqual(checked.unverified, [])
   assert.deepEqual(checked.mismatched, [])
 })
@@ -155,13 +160,9 @@ test('复核：读到值与目标不符时转进 mismatched', async () => {
   const { ctx } = fakeHost([
     { id: 'include:host:subagent', disabled: false, options: { config: {} } },
   ])
-  const applied = await applyModeBudget(ctx, 'recommended')
+  await applyModeBudget(ctx, 'recommended')
   const wrong = { get: name => limitsFor({ ...MODE_BUDGETS.recommended, maxDepth: 3 })[name] }
-  const checked = recheckBudget(wrong, applied)
+  const checked = recheckBudget(wrong)
   assert.deepEqual(checked.unverified, [])
   assert.match(checked.mismatched[0], /maxDepth/u)
-})
-
-test('复核：没有提交记录时原样返回', () => {
-  assert.equal(recheckBudget({ get: () => undefined }, null), null)
 })

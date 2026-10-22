@@ -191,11 +191,11 @@ async function updateEntry(ctx, id, service, budgetKeys) {
  * @param {string} mode - 补丁模式。
  * @returns {Promise<{ mode: string, applied: string[], skipped: string[], mismatched: string[], unverified: string[] }>}
  */
-/** 最近一次提交的结果，供状态与诊断展示。 */
-export let lastBudget = null
-
-/** 最近一次提交的目标值，供状态读取时复核；不进状态契约。 */
-let lastTargets = []
+/**
+ * 最近一次提交。结果与目标值放在同一个对象里，一次赋值——分两个变量写会在并发提交
+ * 时错配，复核就会拿 A 的目标核 B 的结果。
+ */
+let lastSubmission = null
 
 export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
   const target = budgets[mode] ?? budgets.recommended
@@ -220,9 +220,9 @@ export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
     mismatched.push(...outcome.mismatched)
     unverified.push(...outcome.unverified)
   }
-  lastBudget = { mode, applied, skipped, mismatched, unverified }
-  lastTargets = plans.map(([id, service, keys]) => [id, service, keys])
-  return lastBudget
+  const budget = { mode, applied, skipped, mismatched, unverified }
+  lastSubmission = { budget, targets: plans.map(([id, service, keys]) => [id, service, keys]) }
+  return budget
 }
 
 /**
@@ -233,18 +233,18 @@ export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
  * 转进 `mismatched`，未提交的条目不核。目标值不进状态契约。
  *
  * @param {object} ctx - Cordis 上下文。
- * @param {object|null} last - 最近一次提交结果。
- * @returns {object|null} 复核后的结果；没提交过时原样返回。
+ * @returns {object|null} 复核后的结果；没提交过时 null。
  */
-export function recheckBudget(ctx, last) {
-  if (last === null || last === undefined) return last
+export function recheckBudget(ctx) {
+  if (lastSubmission === null) return null
+  const { budget, targets } = lastSubmission
   const mismatched = []
   const unverified = []
-  for (const [id, service, expected] of lastTargets) {
-    if (!last.applied.includes(id)) continue
+  for (const [id, service, expected] of targets) {
+    if (!budget.applied.includes(id)) continue
     verifyApplied(ctx, id, service, expected, mismatched, unverified)
   }
-  return { ...last, mismatched, unverified }
+  return { ...budget, mismatched, unverified }
 }
 
 /**

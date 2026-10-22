@@ -10,7 +10,7 @@ import { currentMode, describeSandboxPolicy, sessionOf } from './seams.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { promptMode, readMode, readModeExtension, readTail } from '../context/prompt.js'
-import { describeLoader, lastBudget, readRuntimeLimits, recheckBudget } from './capabilities.js'
+import { describeLoader, readRuntimeLimits, recheckBudget } from './capabilities.js'
 
 const name = 'rumo-dsh-breaklimit'
 
@@ -154,7 +154,7 @@ export function buildStatus(ctx, config, runtime) {
     plugin: name,
     promptMode: mode,
     budget: readRuntimeLimits(ctx),
-    budgetApply: recheckBudget(ctx, lastBudget),
+    budgetApply: recheckBudget(ctx),
     loader: describeLoader(ctx),
     enabled: runtime.enabled,
     injection: describeInjection(runtime.lastAssembly),
