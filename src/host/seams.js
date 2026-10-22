@@ -12,10 +12,10 @@ const SECTION_NAME = 'breaklimit'
 
 const PERSONA_PREFIX_SECTION = 'deployment:persona-prefix'
 
-// 兜底段的落点。正常分支把头部折进宿主在 order 0 注册的 persona 前缀段，
+// 兜底段的声明序号。正常分支把头部折进宿主在 order 0 注册的 persona 前缀段，
 // 兜底要复现的是「身份在最前」这个位置，不是「紧贴尾部」——用尾部 order - 1
-// 会把整段注入（身份 + 正文）排到提示词末尾。1 落在宿主 HARNESS_IDENTITY(-1000)
-// 之后、其余各段之前。
+// 会把整段注入（身份 + 正文）排到提示词末尾。1 对应宿主 HARNESS_IDENTITY(-1000)
+// 之后、其余各段之前的位置；落点不靠这个序号决定，由插入下标定（见装配回调）。
 const HEAD_FALLBACK_ORDER = 1
 
 const SOFT_INTRO_RE =
@@ -364,18 +364,20 @@ export function registerSeams(ctx, config, runtime, order) {
     const target = sections.find(section => section?.name === PERSONA_PREFIX_SECTION)
     if (target === undefined) {
       // 组合里没有 persona 前缀段时，头点会整段丢掉。补一个自己的段落兜住，
-      // 位置复现正常分支的语义：身份在最前（宿主身份段 -1000 之后、其余段之前）。
+      // 位置复现正常分支的语义：身份在最前、其余段之前。
       //
-      // 位置必须自己算：宿主是「按 order 排序 → 跑 waterfall → 之后不再排序」，
-      // renderPrompt 直接按数组顺序拼接（deepseek-harness 的
+      // 位置必须自己按数组下标定：宿主是「按 order 排序 → 跑 waterfall → 之后不再
+      // 排序」，renderPrompt 直接按数组顺序拼接（deepseek-harness 的
       // packages/core/system-prompt/src/index.ts:652 排序、:677 跑 waterfall、
       // :291 renderPrompt）。所以 waterfall 里插进来的段落没有第二次排序机会，
-      // 声明里的 order 完全不参与排序，落点只由下标决定。
+      // 声明里的 order 完全不参与排序，落点只由下标决定；装配结果的段对象又只有
+      // { name, text, interpolate }，没有 order 字段可当依据——按 order 找插入点
+      // 只会 findIndex 恒 -1，整段被 push 到提示词末尾。到这里时宿主身份段已被
+      // stripHostIdentity 剔除，「身份在最前、其余段之前」就是下标 0：兜底段
+      // （含破限身份与正文）排在整个提示词之首。不按段名找位置，不引入对宿主
+      // 段名的依赖。
       const head = { name: 'breaklimit:head', order: HEAD_FALLBACK_ORDER, text }
-      const at = sections.findIndex(section => section?.order > head.order)
-      const placed = at === -1
-        ? [...sections, head]
-        : [...sections.slice(0, at), head, ...sections.slice(at)]
+      const placed = [head, ...sections]
       return { ...resolved, sections: placed }
     }
     target.text = target.text ? `${text}\n\n${target.text}` : text

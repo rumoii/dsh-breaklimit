@@ -11,8 +11,9 @@
 // 缺失时整段注入（身份 + 正文）落在提示词末尾。
 //
 // 兜底要复现的是正常分支的位置语义：身份在最前。正常分支折进宿主 order 0 的
-// deployment:persona-prefix；兜底段用 order 1，落在宿主身份段（-1000）之后、
-// 其余各段之前。
+// deployment:persona-prefix；兜底段声明 order 1，但落点不靠序号——由数组下标
+// 定：插到下标 0（整个提示词之首）。插入点的数组已经过 stripHostIdentity，宿主
+// 身份段不在其中，「身份在最前、其余段之前」就落在最前。
 //
 // 驱动的假东西只有 ctx：registerSeams 本体、注入通道、档位读取都走真实代码。
 // DSH_HOME 指向临时目录，不碰真实的 ~/.dsh。
@@ -138,14 +139,17 @@ async function assembleObserved(sections, finalPrompt) {
   }
 }
 
-test('无 persona 前缀段时，兜底段插在宿主身份段之后、其余段之前', async () => {
-  // -1000 那段特意不叫 harness:identity：那个名字会被 stripHostIdentity 整段剔除，
-  // 剔除之后兜底段就不在它后面了，断言也就测不到真实落点。
+test('无 persona 前缀段时，兜底段插到提示词之首', async () => {
+  // 段对象是宿主 AssembledSection 的真实形状（{ name, text, interpolate? }，
+  // deepseek-harness 的 packages/core/system-prompt/src/index.ts:93-100）：
+  // 没有 order 字段。旧夹具自造了 order 字段，正好把「按 order 找插入点」的
+  // 实现缺陷掩了过去。特意不用 harness:identity 命名首段：那个名字会被
+  // stripHostIdentity 整段剔除，插入点的数组里就没有它。
   const sections = [
-    { name: 'deployment:preamble', order: -1000, text: 'preamble' },
-    { name: 'breaklimit', order: TAIL_ORDER, text: 'tail' },
-    { name: 'tools:core', order: 10000, text: 'tools core' },
-    { name: 'tools:sdk', order: 20000, text: 'tools sdk' },
+    { name: 'deployment:preamble', text: 'preamble' },
+    { name: 'breaklimit', text: 'tail' },
+    { name: 'tools:core', text: 'tools core' },
+    { name: 'tools:sdk', text: 'tools sdk' },
   ]
   const out = await assemble(sections)
   const ids = named(out.sections)
@@ -155,23 +159,23 @@ test('无 persona 前缀段时，兜底段插在宿主身份段之后、其余�
   assert.equal(head.order, HEAD_FALLBACK_ORDER)
   assert.match(head.text, /INJECT-HEAD/u)
 
-  // 下标断言：兜底段 order=1，插入点是「第一个 order 大于 1 的段」之前，
-  // 于是落在 order=-1000 的段之后、尾部段与所有工具段之前——身份在最前。
-  // 旧实现 push 到末尾，这里会得到下标 4，排在 tools:sdk(20000) 之后；
-  // 定成尾部 order - 1（8998）时这里是下标 2，不再垫底但已到提示词末尾。
+  // 下标断言：落点只由下标决定，兜底段插到下标 0（提示词之首）——插入点的
+  // 数组已过 stripHostIdentity，宿主身份段不在其中。旧实现按 order 字段找插入
+  // 点，可真实段对象没有 order 字段，findIndex 恒 -1，兜底段被 push 到末尾，
+  // 这里会得到下标 4，排在 tools:sdk 之后。
   const at = ids.indexOf('breaklimit:head')
-  assert.equal(at, 1, `兜底段下标应为 1，实际 ${String(at)}：${ids.join(' → ')}`)
-  assert.deepEqual(ids, ['deployment:preamble', 'breaklimit:head', 'breaklimit', 'tools:core', 'tools:sdk'])
-  assert.ok(at > ids.indexOf('deployment:preamble'), '兜底段必须在 order=-1000 的段之后')
-  assert.ok(at < ids.indexOf('breaklimit'), '兜底段必须在尾部段(8999)之前')
-  assert.ok(at < ids.indexOf('tools:core'), '兜底段必须在 order=10000 的段之前')
-  assert.ok(at < ids.indexOf('tools:sdk'), '兜底段必须在 order=20000 的段之前')
+  assert.equal(at, 0, `兜底段下标应为 0，实际 ${String(at)}：${ids.join(' → ')}`)
+  assert.deepEqual(ids, ['breaklimit:head', 'deployment:preamble', 'breaklimit', 'tools:core', 'tools:sdk'])
+  assert.ok(at < ids.indexOf('deployment:preamble'), '兜底段必须在其余段之前')
+  assert.ok(at < ids.indexOf('breaklimit'), '兜底段必须在尾部段之前')
+  assert.ok(at < ids.indexOf('tools:core'), '兜底段必须在 tools:core 之前')
+  assert.ok(at < ids.indexOf('tools:sdk'), '兜底段必须在 tools:sdk 之前')
 })
 
 test('有 persona 前缀段时走正常分支，不产生兜底段', async () => {
   const sections = [
-    { name: 'deployment:persona-prefix', order: 0, text: 'Persona.' },
-    { name: 'tools:core', order: 10000, text: 'tools core' },
+    { name: 'deployment:persona-prefix', text: 'Persona.' },
+    { name: 'tools:core', text: 'tools core' },
   ]
   const out = await assemble(sections)
   const ids = named(out.sections)
@@ -180,15 +184,20 @@ test('有 persona 前缀段时走正常分支，不产生兜底段', async () =>
   assert.equal(ids.includes('breaklimit:head'), false, `不应出现兜底段：${ids.join(' → ')}`)
   assert.match(out.sections[0].text, /^INJECT-HEAD/u, '注入文本应折进 persona 前缀段的最前面')
   assert.match(out.sections[0].text, /Persona\.$/u, '原 persona 文本应保留在后面')
+  // 正常路径护栏：prepend 分支的输出逐字节 = 注入文本 + 空行 + 原 persona。
+  // 注入文本还含包内模式附加段，不写死；用兜底分支取同一份 injectText() 当基准，
+  // 钉住 prepend 分支自己的拼接字节，改动不许波及这里。
+  const probe = await assemble([])
+  assert.equal(out.sections[0].text, `${probe.sections[0].text}\n\nPersona.`)
 })
 
 test('兜底段插入后，原有段的相对顺序不变，传入数组不被改写', async () => {
   const sections = [
-    { name: 'a', order: -1000, text: 'a' },
-    { name: 'b', order: 100, text: 'b' },
-    { name: 'breaklimit', order: TAIL_ORDER, text: 'tail' },
-    { name: 'c', order: 15000, text: 'c' },
-    { name: 'd', order: 20000, text: 'd' },
+    { name: 'a', text: 'a' },
+    { name: 'b', text: 'b' },
+    { name: 'breaklimit', text: 'tail' },
+    { name: 'c', text: 'c' },
+    { name: 'd', text: 'd' },
   ]
   const before = named(sections)
   const snapshot = sections.map(section => ({ ...section }))
@@ -198,13 +207,22 @@ test('兜底段插入后，原有段的相对顺序不变，传入数组不被�
 
   // 去掉兜底段之后，序列与输入逐项相同。
   assert.deepEqual(ids.filter(name => name !== 'breaklimit:head'), before)
-  // 兜底段落 a(-1000) 之后、b(100) 与 breaklimit(8999) 之前。
-  assert.equal(ids.indexOf('breaklimit:head'), 1, `实际顺序：${ids.join(' → ')}`)
+  // 兜底段落在最前（下标 0），其余段相对顺序不变。
+  assert.equal(ids.indexOf('breaklimit:head'), 0, `实际顺序：${ids.join(' → ')}`)
 
   // 传入的数组本身没有被 push/splice，元素对象也没有被就地改。
   assert.equal(sections.length, snapshot.length)
   assert.deepEqual(sections.map(section => ({ ...section })), snapshot)
   assert.deepEqual(named(sections), before)
+})
+
+test('sections 为空时，兜底段落在下标 0', async () => {
+  const out = await assemble([])
+  const ids = named(out.sections)
+
+  assert.deepEqual(ids, ['breaklimit:head'])
+  assert.equal(ids.indexOf('breaklimit:head'), 0, `实际顺序：${ids.join(' → ')}`)
+  assert.match(out.sections[0].text, /INJECT-HEAD/u)
 })
 
 // ── 注入有效性 ──────────────────────────────────────────────────────────────
@@ -215,10 +233,10 @@ test('兜底段插入后，原有段的相对顺序不变，传入数组不被�
 
 test('非 complete 组合：注入文本仍在最终提示词里，状态不报惰性', async () => {
   const sections = [
-    { name: 'harness:identity', order: -1000, text: 'host identity' },
-    { name: 'deployment:persona-prefix', order: 0, text: PERSONA_TEXT },
-    { name: 'breaklimit', order: TAIL_ORDER, text: 'tail text' },
-    { name: 'tools:core', order: 10000, text: 'tools core' },
+    { name: 'harness:identity', text: 'host identity' },
+    { name: 'deployment:persona-prefix', text: PERSONA_TEXT },
+    { name: 'breaklimit', text: 'tail text' },
+    { name: 'tools:core', text: 'tools core' },
   ]
 
   const { out, status } = await assembleObserved(sections, renderedByHost)
@@ -232,10 +250,10 @@ test('非 complete 组合：注入文本仍在最终提示词里，状态不报�
 
 test('complete 组合：注入被宿主丢弃时状态报惰性并给出告警行', async () => {
   const sections = [
-    { name: 'harness:identity', order: -1000, text: 'host identity' },
-    { name: 'deployment:persona-prefix', order: 0, text: PERSONA_TEXT },
-    { name: 'breaklimit', order: TAIL_ORDER, text: 'tail text' },
-    { name: 'tools:core', order: 10000, text: 'tools core' },
+    { name: 'harness:identity', text: 'host identity' },
+    { name: 'deployment:persona-prefix', text: PERSONA_TEXT },
+    { name: 'breaklimit', text: 'tail text' },
+    { name: 'tools:core', text: 'tools core' },
   ]
 
   // 宿主在跑瀑布之前就把 complete 段浅拷贝下来，瀑布之后用 [completeSection]
@@ -257,7 +275,7 @@ test('complete 组合：注入被宿主丢弃时状态报惰性并给出告警�
 })
 
 test('还没观测到落盘的 system/message 时记未知，不伪造惰性', async () => {
-  const sections = [{ name: 'deployment:persona-prefix', order: 0, text: PERSONA_TEXT }]
+  const sections = [{ name: 'deployment:persona-prefix', text: PERSONA_TEXT }]
 
   const { status } = await assembleObserved(sections, null)
 
@@ -267,7 +285,7 @@ test('还没观测到落盘的 system/message 时记未知，不伪造惰性', a
 })
 
 test('formatStatusText 在状态里没有 injection 字段时不抛错', async () => {
-  const sections = [{ name: 'deployment:persona-prefix', order: 0, text: PERSONA_TEXT }]
+  const sections = [{ name: 'deployment:persona-prefix', text: PERSONA_TEXT }]
   const { status } = await assembleObserved(sections, renderedByHost)
 
   const legacy = { ...status }
