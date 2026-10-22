@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { describePatches } from '../patch/index.js'
-import { readDisabled, setPatchEnabled } from '../patch/patch-selection.js'
+import { knownPatchIds, readDisabled, setPatchEnabled } from '../patch/patch-selection.js'
 import { resolveHome } from '../patch/state.js'
 import { sizeOf } from '../patch/fsx.js'
 import { revertPatches } from '../patch/transaction.js'
@@ -270,10 +270,27 @@ function redactPathInText(text, file) {
 
 // errno 文案自带路径：`EPERM: operation not permitted, rename 'C:\...\state.json.tmp'`。
 // 这类文本没有固定形状，按绝对路径的模式整段替换：盘符开头的 Windows 路径，以及常见
-// 根目录开头的 POSIX 路径。误伤面很小（消息里本来就只会出现这两种形状的路径）。
-const ABSOLUTE_PATH_RE = /(?:[A-Za-z]:[\\/][^\s'"）)，。；]+|\/(?:home|Users|srv|tmp|root|var|opt)\/[^\s'"）)，。；]+)/g
+// 根目录开头的 POSIX 路径（/mnt、/data、/Volumes 与 home/Users 等同列在根名单里）。
+// 误伤面很小（消息里本来就只会出现这两种形状的路径）。
+//
+// 路径里可以有空格（`C:\Users\John Doe\x`），句子词也可以跟在空格后面（`写入 … 失败：…`）。
+// 只按句读截断会把句子词一起吞掉，只按空格截断会把第一个空格之后的 `Doe\x` 留在响应里
+// ——那是半脱敏，比不脱敏更坏。空格因此按后面那个词决定断续：
+//   1. 词里还有路径分隔符（`Doe\work\x`），路径没走完，整段继续；
+//   2. 词里没有分隔符、但含中文（`失败`），这是句子词，到此为止；
+//   3. 其余的词（无分隔符、非中文）与路径末段无法区分，宁可保守：并进路径一起折掉，
+//      免得半脱敏把用户目录的后半截留在响应里。errno 文案的路径都带引号，引号边界
+//      先断开，这种形状下的句子词不受影响。
+const PATH_BOUNDARY = `'"）)，。；：！？、`
+const PATH_SEGMENT = String.raw`[^\s${PATH_BOUNDARY}]`
+const BRIDGED_WORD = String.raw`(?:${PATH_SEGMENT}*[\\/]${PATH_SEGMENT}*|[^\s${PATH_BOUNDARY}\p{Script=Han}]+)`
+const ABSOLUTE_PATH_RE = new RegExp(
+  String.raw`(?:[A-Za-z]:[\\/]|\/(?:home|Users|srv|tmp|root|var|opt|mnt|data|Volumes)\/)${PATH_SEGMENT}*(?:[ \t]+${BRIDGED_WORD})*`,
+  'gu',
+)
 
-function redactPathsInText(text) {
+// 供测试按调用面断言脱敏行为；产品代码只在本层内部使用。
+export function redactPathsInText(text) {
   if (typeof text !== 'string' || text === '') return text
   return text.replace(ABSOLUTE_PATH_RE, match => redactPath(match))
 }
@@ -340,7 +357,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         return envelope(400, 'invalid_request', '需要 entries 数组，每项含 from 与 to。')
       }
       const result = writeMasks(home(), parsed.entries)
-      if (!result.ok) return envelope(500, 'write_failed', result.error ?? '写入失败。')
+      // 失败文案是 errno 原文，自带 masks.json 的绝对路径，出网前脱敏。
+      if (!result.ok) return envelope(500, 'write_failed', redactPathsInText(result.error ?? '写入失败。'))
       return envelope(200, 'saved', '', {
         entries: result.entries,
         file: redactPath(masksPath(home())),
@@ -385,6 +403,11 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (typeof parsed.id !== 'string' || typeof parsed.enabled !== 'boolean') {
         return envelope(400, 'invalid_request', '需要 id 字符串与 enabled 布尔值。')
       }
+      // 未知 id 是调用方的输入错误（400），写盘故障是本方的问题（500）。setPatchEnabled
+      // 对前者抛固定文案、对后者抛 errno，靠已知 id 名单分开，不猜错误文案的形状。
+      if (!knownPatchIds().includes(parsed.id)) {
+        return envelope(400, 'unknown_patch', 'Unknown patch id: `' + parsed.id + '`')
+      }
       try {
         const result = setPatchEnabled(home(), parsed.id, parsed.enabled)
         return envelope(200, 'toggled', parsed.enabled ? `已启用 ${parsed.id}。` : `已禁用 ${parsed.id}。`, {
@@ -393,7 +416,9 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
           disabled: result.disabled,
         })
       } catch (error) {
-        return envelope(400, 'unknown_patch', String(error?.message ?? error))
+        // errno 文案自带 patches.json 的绝对路径：细节进宿主日志，响应只给脱敏后的原文。
+        logInternal('write_failed', error)
+        return envelope(500, 'write_failed', redactPathsInText(String(error?.message ?? error)))
       }
     },
 
@@ -490,12 +515,18 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       })
     },
 
-    'GET /rules/status': () => envelope(200, 'ok', '', {
-      active: rules.readActive(home()),
-      rules: rules.listRules(home()),
-      rulesIndex: rules.readIndex(home()).kind,
-      rulesIndexPath: relHomePath(rules.rulesIndexPath(home()), home()),
-    }),
+    'GET /rules/status': () => {
+      const index = rules.readIndex(home())
+      return envelope(200, 'ok', '', {
+        active: rules.readActive(home()),
+        rules: rules.listRules(home()),
+        rulesIndex: index.kind,
+        rulesIndexPath: relHomePath(rules.rulesIndexPath(home()), home()),
+        // 未提交的激活意图：字段是 id/target/created/snapshot/previous/startedAt，
+        // 不含绝对路径，原样透出；没有未完成激活时为 null。
+        pendingActivation: index.pendingActivation ?? null,
+      })
+    },
 
     'GET /rules/read': (req) => {
       const id = new URL(req.url ?? '/', 'http://localhost').searchParams.get('id') ?? ''
@@ -516,11 +547,14 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
       const saved = rules.saveRule(home(), parsed.id, parsed.text, { name: parsed.name, target: parsed.target })
       if (!saved.ok) {
-        if (saved.code === 'index_corrupt') return envelope(409, 'index_corrupt', saved.reason)
-        return envelope(400, saved.code ?? 'rule_invalid', saved.reason, {
+        // 失败 reason 来自 messageOf(error)，含 $DSH_HOME 下的绝对路径，出网前脱敏。
+        if (saved.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(saved.reason))
+        return envelope(400, saved.code ?? 'rule_invalid', redactPathsInText(saved.reason), {
           bodyWritten: saved.bodyWritten === true,
           indexWritten: saved.indexWritten === true,
           landingSynced: saved.landingSynced === true,
+          // 哈希记录写失败且落点回退也失败时，调用方必须知道落点现在不是同步前的内容。
+          landingRestored: saved.landingRestored === true,
         })
       }
       // 成功契约：{ ok, id, meta: { name, target }, landingSynced, landingStale, landingMoved }。
@@ -544,8 +578,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (typeof parsed.id !== 'string' || parsed.id === '') {
         const cleared = rules.deactivateRule(home())
         if (!cleared.ok) {
-          if (cleared.code === 'index_corrupt') return envelope(409, 'index_corrupt', cleared.reason)
-          return envelope(400, 'rule_invalid', cleared.reason)
+          if (cleared.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(cleared.reason))
+          return envelope(400, 'rule_invalid', redactPathsInText(cleared.reason))
         }
         const view = { ...cleared, skipped: redactSettlement(cleared).skipped }
         if (cleared.kept === true) {
@@ -562,8 +596,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       }
       const done = rules.activateRule(home(), parsed.id)
       if (!done.ok) {
-        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', done.reason)
-        return envelope(400, 'rule_invalid', done.reason)
+        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
+        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
       }
       // 落点被外部改过时不能说「已保留」了事：snapshotKept 为 true 才是首次接管时
       // 的那份原文仍在；否则本次激活会直接覆盖落点上的内容。
@@ -579,11 +613,17 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       const externalCopy = typeof done.externalCopy === 'string'
         ? relHomePath(done.externalCopy, home())
         : null
+      // keptCopy（孤儿快照保留副本）与 externalCopy 同一处置：都是 $DSH_HOME 下
+      // 的绝对路径，只出相对路径（覆盖 ...done 带进来的原值）。
+      const keptCopy = typeof done.keptCopy === 'string'
+        ? relHomePath(done.keptCopy, home())
+        : null
       const view = {
         ...done,
         file: redactPath(done.file),
         previousLanding: redactSettlement(done.previousLanding),
         externalCopy,
+        keptCopy,
       }
       // 被覆盖的外部改动存了副本这件事必须说出来：激活看似「丢了改动」，其实副本在。
       const copied = externalCopy === null ? '' : `；落点上的外部改动已存副本 ${externalCopy}`
@@ -595,14 +635,15 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
       const done = rules.deleteRule(home(), parsed.id)
       if (!done.ok) {
-        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', done.reason)
-        return envelope(400, 'rule_invalid', done.reason)
+        // 失败 reason 含 errno 原文与绝对路径，出网前脱敏（与 save/activate 同口径）。
+        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
+        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
       }
       // 落点被外部改过时快照不随规则删除清除，归属留在清单里；这一条必须说出来，
       // 否则用户以为删干净了，而盘上还躺着一份他不知道的原文。
       const kept = done.kept === true
       const message = kept
-        ? `规则已删除；落点被外部改过，快照仍保留在 landings/${String(done.landingKept?.target ?? '')}，取消激活时可据此处置。`
+        ? `规则已删除；落点被外部改过，快照仍保留在 landings/${String(done.landingKept?.target ?? '')}，重新激活到同一落点时会沿用这份快照，也可自行处理该文件。`
         : '规则已删除。'
       return envelope(200, 'deleted', message, { id: parsed.id, kept, landingKept: done.landingKept ?? null })
     },
@@ -610,8 +651,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /rules/reset': () => {
       const done = rules.resetRules(home())
       if (!done.ok) {
-        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', done.reason)
-        return envelope(400, 'rule_invalid', done.reason)
+        if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
+        return envelope(400, 'rule_invalid', redactPathsInText(done.reason))
       }
       return envelope(200, 'reset', `已清空规则，移除 ${String(done.removed)} 个文件。`, done)
     },
@@ -619,7 +660,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /rules/recover-corrupt': () => {
       const recovered = rules.recoverCorruptIndex(home())
       if (!recovered.ok) {
-        return envelope(400, recovered.code ?? 'recovery_failed', recovered.reason)
+        return envelope(400, recovered.code ?? 'recovery_failed', redactPathsInText(recovered.reason))
       }
       return envelope(200, 'recovered', '规则清单已备份并重置为空清单。', {
         // 相对 `$DSH_HOME`：前端补前缀后是一个能直接粘贴进资源管理器的路径。

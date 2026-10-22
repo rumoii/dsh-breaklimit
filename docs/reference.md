@@ -82,9 +82,13 @@ breaklimit --help
 
 规则落点为 `$DSH_HOME/AGENTS.md` 或 `CLAUDE.md`，读写按原字节：内容不变不重写，非 UTF-8 的旧文件不自动收拢、原样保留。激活会把新正文写进落点；落点上的内容被插件之外改过时，被覆盖的字节先存副本 `landings/<target>.external-<时间戳>-*.txt`，路径在响应 `data.externalCopy` 里报出，副本写不出来则取消激活。落点或规则清单存在但读不到时，操作直接失败（`landing_unreadable` / `index_unreadable`），不按“文件不存在”处理。
 
+`GET /breaklimit/rules/status` 的 `data.pendingActivation` 是中断留下的未提交激活意图，字段为 `id`、`target`、`created`、`snapshot`、`previous`、`startedAt`；没有未完成激活时为 `null`。
+
 `GET /breaklimit/status` 的 `data` 里，`mode` 是审批与工具门实际使用的档位（`sandboxPolicy` 的解析结果，读不到时按 `read-only` 处理）；`sandbox` 说明这个档位是不是真的读到了，字段为 `{ available, mode, error }`。`available` 为 false 表示服务缺失或解析抛错，`error` 给出原因；此时状态文本多一行「档位来源 不可判定」，避免把「真的只读」和「读不到档位」显示成同一个值。
 
-写请求须带 `Origin`，其 URL 的 host（含端口）须与请求头 `Host` 一致；读请求可省略 `Origin`，携带时也执行此校验。不满足校验的请求返回 403。写接口使用 JSON 请求体；响应字段为 `ok`、`code`、`message` 和可选的 `data`。操作并发或文件漂移返回 409；预检阻断和输入非法通常返回 400；写入或记录损坏等内部失败返回 500。请求体超过上限返回 413 `too_large`：上限按所承载载荷（规则正文与注入正文）的 6 倍 JSON 转义余量推导，不设固定封顶，所以正文上限调大后请求体上限跟着涨；正文本身超限仍是 400 `rule_invalid`，两者不是同一件事。检查更新失败返回 502：`code` 为 `update_unreachable`（连不上、超时、非 2xx、限流或代理失败）或 `update_invalid`（响应不是 JSON 或没有合法版本标签）。
+写请求须带 `Origin`，其 URL 的 host（含端口）须与请求头 `Host` 一致；读请求可省略 `Origin`，携带时也执行此校验。不满足校验的请求返回 403。写接口使用 JSON 请求体；响应字段为 `ok`、`code`、`message` 和可选的 `data`。操作并发或文件漂移返回 409；预检阻断和输入非法通常返回 400；写入或记录损坏等内部失败返回 500。请求体超过上限返回 413 `too_large`：上限按所承载载荷（规则正文与注入正文）的 6 倍 JSON 转义余量推导，不设固定封顶，所以正文上限调大后请求体上限跟着涨；正文本身超限不走 413：`POST /breaklimit/rules/save` 回 400 `rule_invalid`、`POST /breaklimit/override` 回 400 `too_large`，与请求体超限不是同一件事。检查更新失败返回 502：`code` 为 `update_unreachable`（连不上、超时、非 2xx、限流或代理失败）或 `update_invalid`（响应不是 JSON 或没有合法版本标签）。
+
+HTTP 响应里的绝对路径一律脱敏：盘符、用户目录与中间层级不出现，路径只折成 `…/<最后一段>`。唯一例外是 `POST /breaklimit/restart` 回传的 `data.command`：它必须是可直接粘贴执行的重启命令，真实绝对路径才有意义；该接口同样在 Host 栅栏与同源校验之内，只有本机放行的来源读得到它。
 
 未提供 `webServer` 服务的宿主组合不会挂载这些路由，状态中显示 `http.mounted: false`。Web 设置页的可用性取决于宿主加载的客户端与服务组合。
 
