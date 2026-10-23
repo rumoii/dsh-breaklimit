@@ -48,45 +48,76 @@ const HELP = `breaklimit —— rumo-dsh-breaklimit 命令行
   --host-root <路径>    指定宿主根，等价于 DSH_BREAKLIMIT_HOST_ROOT
   --help                显示本说明
 
+一次只接受一个动作：--status --apply 这类组合被拒绝并以退出码 2 结束，
+不按书写顺序取最后一个执行。未知参数同样报错退出（退出码 2）并指出参数
+本身；--host-root、--tier 后面的取值不算未知参数。
+
+退出码：
+  0  动作成功，或 --status 预检通过
+  1  执行失败或恢复信息不可读：预检阻断、漂移拒绝、非法档位、诊断有失败项、
+     apply/revert 失败，以及「应用记录不可读」导致的预检跳过
+  2  参数错误（未知参数、多个动作）或宿主根未配置（--status 因此跳过预检）
+两种预检跳过都不以 0 退出：跳过 ≠ 通过，脚本只认 0。
+
 环境：
   DSH_BREAKLIMIT_HOST_ROOT   宿主根的绝对路径
   DSH_HOME                   DSH 主目录，默认 ~/.dsh
 `
 
+/**
+ * 解析参数。
+ *
+ * 兜底分支记录第一个无法识别的参数（含拼错的 --flag 与多余的位置参数）：此前
+ * 它们被静默忽略，最后打印帮助、退出 0，与 --help 不可区分，脚本会当成成功。
+ * 参数值不算未知参数：--host-root 无条件吞掉下一个参数、--tier 吞掉不以 - 开头
+ * 的下一个参数，两者都在 index 递增后跳过，不再落回这个分支。
+ *
+ * actions 记录出现过的动作（去重保序）：此前 out.action 被后写的动作覆盖，
+ * `--status --apply` 实际只跑 apply——可能是破坏性动作。多个动作的拒绝在 run 里
+ * 做，退出策略属于调用方。
+ */
 function parseArgs(argv, env) {
   const out = {
     action: null,
+    actions: [],
     hostRoot: env.DSH_BREAKLIMIT_HOST_ROOT ?? null,
     tier: null,
     session: null,
     taskId: null,
     format: 'md',
     outFile: null,
+    unknown: null,
+  }
+  const takeAction = (name) => {
+    out.action = name
+    if (!out.actions.includes(name)) out.actions.push(name)
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--help' || arg === '-h') out.action = 'help'
-    else if (arg === '--status') out.action = 'status'
-    else if (arg === '--apply') out.action = 'apply'
-    else if (arg === '--revert') out.action = 'revert'
-    else if (arg === '--doctor') out.action = 'doctor'
+    if (arg === '--help' || arg === '-h') takeAction('help')
+    else if (arg === '--status') takeAction('status')
+    else if (arg === '--apply') takeAction('apply')
+    else if (arg === '--revert') takeAction('revert')
+    else if (arg === '--doctor') takeAction('doctor')
     else if (arg === '--tier') {
-      out.action = 'tier'
+      takeAction('tier')
       const next = argv[index + 1]
       if (next && !next.startsWith('-')) {
         index += 1
         out.tier = next
       }
     } else if (arg.startsWith('--tier=')) {
-      out.action = 'tier'
+      takeAction('tier')
       out.tier = arg.slice('--tier='.length)
-    } else if (arg === '--edit') out.action = 'edit'
-    else if (arg === '--rules') out.action = 'rules'
+    } else if (arg === '--edit') takeAction('edit')
+    else if (arg === '--rules') takeAction('rules')
     else if (arg === '--host-root') {
       index += 1
       out.hostRoot = argv[index] ?? null
     } else if (arg.startsWith('--host-root=')) {
       out.hostRoot = arg.slice('--host-root='.length)
+    } else if (out.unknown === null) {
+      out.unknown = arg
     }
   }
   return out
@@ -255,8 +286,11 @@ function runStatus(options, env) {
   }
 
   if (hostRoot === null || hostRoot === undefined || String(hostRoot).trim() === '') {
-    process.stdout.write('  补丁预检    跳过（宿主根未配置）\n')
-    return 0
+    // 跳过不是通过。这里曾经 return 0，脚本于是把「没做预检」读成「预检通过」。
+    // 口径与下面「应用记录不可读」的跳过对齐：跳过一律非 0，宿主根未配置是
+    // 参数/配置类问题，用 2。
+    process.stdout.write('  补丁预检    跳过（宿主根未配置）：预检被跳过 ≠ 通过，不得据此判为通过\n')
+    return 2
   }
   if (loaded.kind === 'corrupt' || loaded.kind === 'version_mismatch') {
     process.stdout.write('  补丁预检    跳过（应用记录不可读）\n')
@@ -469,6 +503,17 @@ function runEdit(env) {
 export function run(argv, env = process.env, deps = {}) {
   const options = parseArgs(argv, env)
   const home = resolveHome(env)
+
+  // 参数错误先于一切动作：报错并以 2 结束，任何动作都不执行。
+  if (options.unknown !== null) {
+    process.stderr.write(`未知参数 ${options.unknown}：不执行任何动作。可用参数见 --help。\n`)
+    return 2
+  }
+  if (options.actions.length > 1) {
+    const given = options.actions.map(name => `--${name}`).join('、')
+    process.stderr.write(`一次只接受一个动作：${given} 同时给出，不执行任何动作。可用参数见 --help。\n`)
+    return 2
+  }
 
   if (options.action === null || options.action === 'help') {
     process.stdout.write(HELP)
