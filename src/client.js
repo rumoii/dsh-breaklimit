@@ -596,9 +596,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     "html[data-guide=\"off\"] .bkl-root .bkl-term { border-bottom: none; cursor: inherit; }",
     // 居中状态块
     ".bkl-root .bkl-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 40px 24px; border-radius: var(--dsw-radius-lg, 12px); border: 1px dashed var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1); }",
-    ".bkl-root .bkl-state.error { border-style: solid; border-color: var(--dsw-alias-state-error-secondary, color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, transparent)); background: linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent), var(--dsw-alias-bg-layer-1) 75%); }",
-    ".bkl-root .bkl-state.warn { border-style: solid; border-color: var(--dsw-alias-state-warn-secondary, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 36%, transparent)); background: linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent), var(--dsw-alias-bg-layer-1) 75%); }",
-    ".bkl-root .bkl-state.loading { border-style: solid; border-color: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); background: linear-gradient(180deg, color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent), var(--dsw-alias-bg-layer-1) 75%); }",
     // 页面提示条 (PageTip)
     ".bkl-root .bkl-tip { display: flex; align-items: flex-start; gap: 11px; padding: 11px 12px 11px 14px; margin-bottom: 4px; border: 1px dashed var(--dsw-alias-border-l3, #cbd5e1); border-radius: var(--dsw-radius-md, 8px); background: var(--dsw-alias-bg-layer-1); font-size: 13px; color: var(--dsw-alias-label-secondary); }",
     ".bkl-root .bkl-tip-icon { color: var(--dsw-alias-state-business-primary, #3b82f6); margin-top: 2px; flex-shrink: 0; }",
@@ -3720,6 +3717,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         }
         if (!element.open) element.showModal()
         const target = (typeof element.querySelector === "function" ? element.querySelector("[data-bkl-autofocus]") : null)
+          ?? (typeof element.querySelector === "function" ? element.querySelector("[data-bkl-ack], [data-bkl-confirm-input]") : null)
           ?? (typeof element.querySelector === "function" ? element.querySelector(FOCUSABLE) : null)
         target?.focus?.()
       } else if (element.open) {
@@ -3791,6 +3789,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h("input", {
           type: "checkbox",
           id: `${idBase}-ack`,
+          "data-bkl-ack": "true",
           style: S.ackInput,
           checked: ackChecked,
           onChange: (e) => { setAckChecked(e.target.checked) },
@@ -3805,6 +3804,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           h("input", {
             id: `${idBase}-confirm`,
             className: "bkl-input",
+            "data-bkl-confirm-input": "true",
             style: merge(S.input, S.confirmWordInput),
             autoComplete: "off",
             spellCheck: false,
@@ -4852,11 +4852,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                 T.rulesHeadMid,
                 h(Term, { termKey: "instructions" }),
                 T.rulesHeadSuffix,
-              ] ?? T.rulesDesc),
-              h(Button, {
-                kind: "quiet", size: "small", onClick: onRecover,
-                off: !isCorrupt, reason: T.whyRulesCorrupt,
-              }, T.recoverRules))),
+              ] ?? T.rulesDesc))),
           h("div", { style: S.rulePane },
             edit !== null
               ? h(RuleEditor, { edit, rules, activeRule, busy, onChange: onEditChange, onSave, onCancel: onCancelEdit, onOpenExisting: onEdit })
@@ -6386,7 +6382,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             role: "tab",
             className: "bkl-tab",
             "aria-selected": selected ? "true" : "false",
-            "aria-controls": `bkl-panel-${key}`,
+            "aria-controls": selected ? `bkl-panel-${key}` : undefined,
             tabIndex: selected ? 0 : -1,
             style: merge(S.tab, selected && S.tabOn),
             onClick: () => { goTab(key) },

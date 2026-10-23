@@ -159,6 +159,8 @@ export function buildStatus(ctx, config, runtime) {
     budgetApply: recheckBudget(ctx),
     loader: describeLoader(ctx),
     enabled: runtime.enabled,
+    // 首轮收拢的结果（导入了什么/为何跳过/失败原因）。不暴露它时收拢失败完全不可见。
+    ensure: runtime.ensure ?? null,
     injection: describeInjection(runtime.lastAssembly),
     target: DSH_TARGET,
     hostRoot,
@@ -213,6 +215,7 @@ export function buildStatus(ctx, config, runtime) {
     activeRule: rules.readActive(home),
     rules: rules.listRules(home),
     rulesIndex: rules.readIndex(home).kind,
+    pendingActivation: rules.readIndex(home).pendingActivation,
     rulesIndexPath: rules.rulesIndexPath(home),
     // 权限分层取自宿主服务解析后的现值：本插件在 `cordis.patch.yml` 里声明的三档 ask
     // 会被 profile、home 与命令行三层整体覆盖，只有宿主自己的结果才说明接缝还收不收得到询问。
