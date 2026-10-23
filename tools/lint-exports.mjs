@@ -118,6 +118,19 @@ export function checkSources(sources, root) {
   for (const [file, text] of sources) exportsByFile.set(file, collectExports(text))
 
   const problems = []
+  // 坏 import 检测：目标被删留下的相对说明符。不能复用 collectImports 的结果——
+  // 它按模式收集，分不清真 import 和测试夹具字符串里的假 import；这里只认行首
+  // （可缩进，不许跨行）的 import/export 语句。已知漏报面：动态 import('./x.js')、
+  // 无空格写法 import{a}from'./x.js'；已知误报面：模板字符串里整行独占的假 import。
+  const importStatementRe = /^[ \t]*(?:import|export)\s[^'"]*?from\s+['"](\.[^'"]+)['"]|^[ \t]*import\s+['"](\.[^'"]+)['"]/gm
+  for (const [file, text] of sources) {
+    for (const match of stripComments(text).matchAll(importStatementRe)) {
+      const specifier = match[1] ?? match[2]
+      if (resolveSpecifier(file, specifier) === null) {
+        problems.push(`${path.relative(root, file)}: 无法解析的 import：${specifier}`)
+      }
+    }
+  }
   for (const [file, text] of sources) {
     const relative = path.relative(root, file)
     // import 的说明符是字符串，必须在只去注释的文本上收集。

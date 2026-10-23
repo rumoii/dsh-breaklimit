@@ -1087,6 +1087,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       doneActivated: (label, t) => `已激活「${String(label)}」，写入 ${String(t)}`,
       doneActivatedNext: "从下一轮对话开始生效。",
       doneDeactivated: "已取消激活",
+      doneDeactivateKept: "未取消激活，规则仍在生效",
+      doneDeactivateKeptNext: "写入文件未能还原；现有内容、激活记录和快照已保留。请处理后重试。",
+      ruleCleanupPending: "新规则已激活，旧落点收尾尚未完成；状态记录与原文快照已保留。",
       landingRestored: (t) => `${String(t)} 已还原成原来的内容。`,
       landingRemoved: (t) => `插件创建的 ${String(t)} 已删除。`,
       landingSkipped: (n) => `${String(n)} 个文件被别的程序改过，插件原样保留了。`,
@@ -1189,6 +1192,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptSavingHint: "正在保存已提交的内容，你可以继续编辑；新输入会保留。",
       donePromptSavedMore: "已保存提交的内容；编辑器里还有新的未保存修改",
       donePromptSavedMoreNext: "保存期间输入的内容仍在编辑器里，可以继续编辑或再次保存。",
+      donePromptSavedSwitched: "已保存；编辑器里现在是别的内容，未受影响",
+      donePromptSavedSwitchedNext: "保存在途时编辑器换成了别的内容：刚保存的版本已落盘，编辑器里的内容没有被改动。",
       confirmDiscardPromptTitle: "放弃正文修改？",
       confirmDiscardPromptBody: "会回到上次保存的内容，当前未保存的输入会丢失。",
       confirmDiscardPromptYes: "放弃修改",
@@ -1885,6 +1890,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       doneActivated: (label, t) => `Activated ${String(label)}, written into ${String(t)}`,
       doneActivatedNext: "Takes effect from the next turn.",
       doneDeactivated: "Deactivated",
+      doneDeactivateKept: "Not deactivated; the rule is still active",
+      doneDeactivateKeptNext: "The landing file could not be restored. Its contents, active record and snapshot were kept. Resolve the issue and retry.",
+      ruleCleanupPending: "The new rule is active; the previous landing still needs cleanup. Its record and original snapshot were kept.",
       landingRestored: (t) => `${String(t)} is back to its original content.`,
       landingRemoved: (t) => `The ${String(t)} the plugin created was removed.`,
       landingSkipped: (n) => `${String(n)} ${Number(n) === 1 ? "file was" : "files were"} changed by another program and left as is.`,
@@ -1988,6 +1996,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptSavingHint: "Saving the submitted text; you can keep typing. New input is kept.",
       donePromptSavedMore: "Saved the submitted text; newer edits are still unsaved",
       donePromptSavedMoreNext: "Text typed during the save stayed in the editor. Keep editing or save again.",
+      donePromptSavedSwitched: "Saved; the editor now shows different content and was left untouched",
+      donePromptSavedSwitchedNext: "The editor switched to other content while saving. The saved version is on disk and the editor content was not changed.",
       confirmDiscardPromptTitle: "Discard prompt changes?",
       confirmDiscardPromptBody: "The editor returns to the last saved text; unsaved input is lost.",
       confirmDiscardPromptYes: "Discard changes",
@@ -2840,11 +2850,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           emit()
           return { ok: true }
         } catch (error) {
-          state.saving = false
-          emit()
           const code = String(error?.code ?? "")
-          // 超时/断网不等于后端没写：结果未知，让调用方去重新读取核对，而不是宣布未生效。
-          return { ok: false, unknown: code === "timeout" || code === "network" }
+          const unknown = code === "timeout" || code === "network"
+          state.saving = false
+          if (unknown) {
+            // 后端可能已写入：旧读取响应作废，可信读回前暂停整表覆盖和预览。
+            state.stale = true
+            version += 1
+          }
+          emit()
+          return { ok: false, unknown }
         }
       }
       const result = chain.then(task, task)
@@ -4754,7 +4769,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h(Button, { kind: "quietDanger", size: "small", off: busy, reason: T.whyBusy, label: T.deleteRule(rule.name || rule.id), onClick: () => { onDelete(rule) } }, T.del)))
   }
 
-  function RulesBlock({ rules, activeRule, rulesIndex, rulesIndexPath, selectedId, body, edit, busy, onNew, onOpen, onEdit, onEditChange, onSave, onCancelEdit, onActivate, onDeactivate, onDelete, onRecover, onRetryBody, noticeView }) {
+  function RulesBlock({ rules, activeRule, rulesIndex, rulesIndexPath, cleanupPending, selectedId, body, edit, busy, onNew, onOpen, onEdit, onEditChange, onSave, onCancelEdit, onActivate, onDeactivate, onDelete, onRecover, onRetryBody, noticeView }) {
     const isCorrupt = rulesIndex === "corrupt"
     const newWhy = busy ? T.whyBusy : isCorrupt ? T.whyRulesCorrupt : null
     const selected = rules.find((rule) => rule.id === selectedId) ?? rules.find((rule) => rule.id === activeRule) ?? rules[0] ?? null
@@ -4794,6 +4809,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           h(Tag, null, T.rulesCount(rules.length)),
           edit === null ? h(Button, { size: "small", off: newWhy !== null, reason: newWhy, onClick: onNew }, T.newRule) : null),
     },
+      cleanupPending ? h(Notice, { tone: "warn", title: T.ruleCleanupPending }) : null,
       // 清单正常但空规则且未在编辑时：居中渲染 StateBlock(empty)
       rules.length === 0 && edit === null
         ? h(StateBlock, {
@@ -5202,7 +5218,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [restart, setRestart] = useState(null)
     const [draft, setDraft] = useState(null)
     const [guideOpen, setGuideOpen] = useState(true)
-    const [ruleEdit, setRuleEdit] = useState(null)
+    const [ruleEdit, setRuleEditState] = useState(null)
     const [selectedRuleId, setSelectedRuleId] = useState(null)
     const [ruleBody, setRuleBody] = useState({ id: null, status: "idle", text: "" })
     const [wordEditor, setWordEditor] = useState(null)
@@ -5227,6 +5243,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const loadAppliedRef = useRef(0)
     // 弹窗代号：openDialog/closeDialog 都会递增；更新弹窗迟到的 render 只认自己这一代。
     const dialogEpochRef = useRef(0)
+    const ruleEditRef = useRef(ruleEdit)
+    // 编辑器实例号：每次从外部载入/新建都换一个。保存回调据此判断「还是不是保存时
+    // 那个编辑器」——只比 id 区分不了同 id 的另一次读取把编辑器整体换掉的情况。
+    const editTokenSeq = useRef(0)
+    ruleEditRef.current = ruleEdit
+    const setRuleEdit = useCallback((value) => {
+      const next = typeof value === "function" ? value(ruleEditRef.current) : value
+      ruleEditRef.current = next
+      setRuleEditState(next)
+    }, [])
     const setPromptDraft = useCallback((value) => {
       draftRef.current = typeof value === "function" ? value(draftRef.current) : value
       setDraft(draftRef.current)
@@ -5789,7 +5815,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       clearNotice("rules")
       setDialog(null)
       const empty = { isNew: true, id: "", name: "", target: RULE_TARGETS[0], text: "" }
-      setRuleEdit({ ...empty, baseline: empty })
+      editTokenSeq.current += 1
+      setRuleEdit({ ...empty, token: editTokenSeq.current, baseline: empty })
     }
 
     const newRule = () => {
@@ -5808,7 +5835,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           target: RULE_TARGETS.includes(payload.data?.target) ? payload.data.target : RULE_TARGETS[0],
           text: typeof payload.data?.text === "string" ? payload.data.text : "",
         }
-        setRuleEdit({ ...initial, baseline: initial })
+        setRuleEdit({ ...initial, token: (editTokenSeq.current += 1), baseline: initial })
       })
     }
 
@@ -5827,15 +5854,31 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         const data = payload.data ?? {}
         const saved = ruleSaveNotice(data, f.activeRule, edit)
         if (mounted.current) {
-          setRuleEdit(null)
-          setSelectedRuleId(edit.id)
-          setRuleBody({ id: edit.id, status: "ok", text: edit.text })
+          const current = ruleEditRef.current
+          // 「同一个编辑器实例」以 token 判定：保存在途时编辑器可能被换成同 id 的
+          // 另一次读取（打开已有规则按钮不受 busy 禁用），id 相同 ≠ 还是保存时那个。
+          // 否则陈旧内容会被当成「保存期间的新输入」留下，用户再保存就覆盖刚落盘的正文。
+          const sameEditor = current !== null && current.token === edit.token
+          const unchanged = sameEditor && ["name", "target", "text"].every(key => current[key] === edit[key])
+          const remaining = unchanged ? null : sameEditor
+            ? { ...current, isNew: false, baseline: { ...edit, isNew: false } }
+            : current
+          setRuleEdit(remaining)
+          if (sameEditor) {
+            setSelectedRuleId(edit.id)
+            setRuleBody({ id: edit.id, status: "ok", text: edit.text })
+          }
+          const editorNote = sameEditor
+            ? { title: T.donePromptSavedMore, next: T.donePromptSavedMoreNext }
+            : { title: T.donePromptSavedSwitched, next: T.donePromptSavedSwitchedNext }
+          // 编辑器状态不许盖掉保存结果里的落点警示（landingStale 等）：拼进去而不是替换。
+          const savedExtra = saved.title === T.ruleSaved ? null : saved.title
           notify("rules", {
-            tone: saved.tone,
-            title: saved.title,
-            next: saved.next,
+            tone: remaining === null ? saved.tone : "warn",
+            title: remaining === null ? saved.title : editorNote.title,
+            next: remaining === null ? saved.next : [editorNote.next, savedExtra].filter(Boolean).join(" "),
             // 保存与激活是两步：保存只存下来，要生效请再按一次「现在激活」。
-            action: saved.activateRule === null ? undefined : "activateNow",
+            action: saved.activateRule === null || remaining !== null ? undefined : "activateNow",
             actionRule: saved.activateRule ?? undefined,
           })
         }
@@ -5870,10 +5913,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         run: () => run("rules", async () => {
           const payload = await post("/rules/activate", { id: rule.id })
           const skipped = payload.data?.previousLanding?.skipped
+          const pending = payload.data?.cleanupPending === true
           notify("rules", {
-            tone: "ok",
+            tone: pending ? "warn" : "ok",
             title: T.doneActivated(label, String(payload.data?.target ?? rule.target)),
-            next: Array.isArray(skipped) && skipped.length > 0 ? T.landingSkipped(skipped.length) : T.doneActivatedNext,
+            next: pending ? T.ruleCleanupPending : Array.isArray(skipped) && skipped.length > 0 ? T.landingSkipped(skipped.length) : T.doneActivatedNext,
           })
         }, true),
       })
@@ -5889,10 +5933,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           const payload = await post("/rules/activate", { id: "" })
           const data = payload.data ?? {}
           const skipped = Array.isArray(data.skipped) ? data.skipped.length : 0
+          const kept = payload.code === "deactivate_kept" || data.kept === true || data.active === true
           notify("rules", {
-            tone: skipped > 0 ? "warn" : "ok",
-            title: T.doneDeactivated,
-            next: skipped > 0 ? T.landingSkipped(skipped) : data.restored ? T.landingRestored(rule.target) : data.removed ? T.landingRemoved(rule.target) : undefined,
+            tone: kept || skipped > 0 ? "warn" : "ok",
+            title: kept ? T.doneDeactivateKept : T.doneDeactivated,
+            next: kept ? T.doneDeactivateKeptNext : skipped > 0 ? T.landingSkipped(skipped) : data.restored ? T.landingRestored(rule.target) : data.removed ? T.landingRemoved(rule.target) : undefined,
           })
         }, true),
       })
@@ -6212,6 +6257,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           activeRule: f.activeRule,
           rulesIndex: f.rulesIndex,
           rulesIndexPath: f.rulesIndexPath,
+          cleanupPending: status?.pendingActivation?.phase === "cleanup",
           selectedId: selectedRuleId,
           body: ruleBody,
           edit: ruleEdit,

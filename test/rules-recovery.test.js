@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
 
 import {
   activateRule,
@@ -187,7 +188,7 @@ test('同落点手改后取消激活：落点保持手改内容，快照仍在',
   assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'original text')
 })
 
-test('正常切换（未手改落点）：写新快照，snapshotKept 为 false', () => {
+test('正常同落点切换沿用首次快照，不恢复旧落点', () => {
   const home = tempHome()
   seedTarget(home, 'AGENTS.md', 'original text')
   assert.equal(saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' }).ok, true)
@@ -198,8 +199,8 @@ test('正常切换（未手改落点）：写新快照，snapshotKept 为 false'
 
   const switched = activateRule(home, 'beta')
   assert.equal(switched.ok, true)
-  assert.equal(switched.snapshotKept, false)
-  assert.equal(switched.previousLanding.restored, true)
+  assert.equal(switched.snapshotKept, true)
+  assert.equal(switched.previousLanding.restored, false)
   assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'original text')
   assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'B body')
 
@@ -223,4 +224,144 @@ test('首轮导入：原文留在 bodies/default.md，切换规则只可能丢�
   assert.equal(switched.snapshotKept, true)
   assert.equal(fs.readFileSync(ruleTextPath(home, 'default'), 'utf8'), 'existing instructions')
   assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'existing instructions')
+})
+
+
+test('切到不可读的新落点失败时，旧激活、落点和原文快照完全不动', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'CLAUDE.md' })
+  activateRule(home, 'alpha')
+  fs.mkdirSync(targetPath(home, 'CLAUDE.md'))
+  const before = fs.readFileSync(rulesIndexPath(home))
+  assert.equal(activateRule(home, 'beta').code, 'landing_unreadable')
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'A body')
+  assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  assert.deepEqual(fs.readFileSync(rulesIndexPath(home)), before)
+  assert.equal(saveRule(home, 'alpha', 'A revised').landingSynced, true)
+})
+
+test('同落点换规则提交失败，旧字节和首次快照不被先行处置', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'AGENTS.md' })
+  activateRule(home, 'alpha')
+  const original = fs.renameSync
+  let writes = 0
+  fs.renameSync = (from, to) => {
+    if (to === rulesIndexPath(home) && ++writes === 2) throw new Error('commit failed')
+    return original(from, to)
+  }
+  let result
+  try { result = activateRule(home, 'beta') } finally { fs.renameSync = original }
+  assert.equal(result.ok, false)
+  assert.equal(readActive(home), 'alpha')
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'A body')
+  assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+})
+
+test('跨落点在提交后中断，启动可按 cleanup 意图续做旧落点收尾', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'CLAUDE.md' })
+  activateRule(home, 'alpha')
+  const moduleUrl = new URL('../src/context/rules.js', import.meta.url).href
+  const code = `import fs from 'node:fs';import {activateRule,rulesIndexPath} from ${JSON.stringify(moduleUrl)};
+    const home=process.argv[1];const rename=fs.renameSync;
+    fs.renameSync=(from,to)=>{const r=rename(from,to);if(to===rulesIndexPath(home)&&JSON.parse(fs.readFileSync(to,'utf8')).pendingActivation?.phase==='cleanup')process.exit(23);return r};
+    activateRule(home,'beta');`
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', code, home], { encoding: 'utf8' })
+  assert.equal(child.status, 23, child.stderr)
+  assert.equal(readActive(home), 'beta')
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'A body')
+  // 子进程模拟在已提交点退出；释放它留下的锁，避免依赖陈旧锁宽限期。
+  releaseFileLock({ path: lockFilePath(home), operationId: JSON.parse(fs.readFileSync(lockFilePath(home), 'utf8')).operationId })
+  const recovered = ensureInitialState(home)
+  assert.equal(recovered.active, 'beta')
+  assert.equal(readIndex(home).pendingActivation, null)
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  assert.equal(fs.readFileSync(targetPath(home, 'CLAUDE.md'), 'utf8'), 'B body')
+})
+
+
+test('旧落点 I/O 故障保留 cleanup，新激活有效；故障解除后写入口先续做', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'CLAUDE.md' })
+  activateRule(home, 'alpha')
+  const rename = fs.renameSync
+  fs.renameSync = (from, to) => {
+    if (to === targetPath(home, 'AGENTS.md')) throw new Error('old target busy')
+    return rename(from, to)
+  }
+  try {
+    const result = activateRule(home, 'beta')
+    assert.equal(result.ok, true)
+    assert.equal(result.cleanupPending, true)
+    assert.equal(readActive(home), 'beta')
+    assert.equal(readIndex(home).pendingActivation.phase, 'cleanup')
+    assert.equal(deactivateRule(home).code, 'conflict')
+    assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  } finally { fs.renameSync = rename }
+  assert.equal(saveRule(home, 'beta', 'B revised').landingSynced, true)
+  assert.equal(readIndex(home).pendingActivation, null)
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+})
+
+test('旧落点已恢复但清理意图提交失败，重试识别原文而非外部漂移', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'CLAUDE.md' })
+  activateRule(home, 'alpha')
+  const rename = fs.renameSync
+  let indexWrites = 0
+  fs.renameSync = (from, to) => {
+    if (to === rulesIndexPath(home) && ++indexWrites === 3) throw new Error('cleanup commit failed')
+    return rename(from, to)
+  }
+  let result
+  try { result = activateRule(home, 'beta') } finally { fs.renameSync = rename }
+  assert.equal(result.cleanupPending, true)
+  assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  assert.equal(ensureInitialState(home).active, 'beta')
+  assert.equal(readIndex(home).pendingActivation, null)
+  assert.equal(fs.existsSync(landingPath(home, 'AGENTS.md')), false)
+})
+
+test('收尾记录与清单不一致：写入口挡下并指路，取消激活可清掉卡死的记录', () => {
+  const home = tempHome()
+  seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'A body', { target: 'AGENTS.md' })
+  saveRule(home, 'beta', 'B body', { target: 'CLAUDE.md' })
+  activateRule(home, 'alpha')
+  const moduleUrl = new URL('../src/context/rules.js', import.meta.url).href
+  const code = `import fs from 'node:fs';import {activateRule,rulesIndexPath} from ${JSON.stringify(moduleUrl)};
+    const home=process.argv[1];const rename=fs.renameSync;
+    fs.renameSync=(from,to)=>{const r=rename(from,to);if(to===rulesIndexPath(home)&&JSON.parse(fs.readFileSync(to,'utf8')).pendingActivation?.phase==='cleanup')process.exit(23);return r};
+    activateRule(home,'beta');`
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', code, home], { encoding: 'utf8' })
+  assert.equal(child.status, 23, child.stderr)
+  releaseFileLock({ path: lockFilePath(home), operationId: JSON.parse(fs.readFileSync(lockFilePath(home), 'utf8')).operationId })
+  // 模拟不守锁的写者把清单改到与收尾记录不一致：previous 没了，续做无从下手。
+  const indexPath = rulesIndexPath(home)
+  const index = readIndexFile(home)
+  assert.equal(index.pendingActivation.phase, 'cleanup')
+  index.pendingActivation.previous = null
+  fs.writeFileSync(indexPath, JSON.stringify(index), 'utf8')
+
+  // 写入口挡下，但报错如实指向「记录与清单不一致」，不冒充读写故障。
+  const blocked = saveRule(home, 'beta', 'X')
+  assert.equal(blocked.code, 'conflict')
+  assert.match(String(blocked.reason), /不一致/)
+
+  // 停止类操作放行：取消激活按自身逻辑清掉这份无法自动续做的记录。
+  const cleared = deactivateRule(home)
+  assert.equal(cleared.ok, true)
+  assert.equal(readIndex(home).pendingActivation, null)
 })

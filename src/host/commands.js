@@ -122,14 +122,16 @@ export function registerCommands(ctx, config, runtime) {
           const copied = typeof done.externalCopy === 'string'
             ? `落点上的外部改动已存副本 ${done.externalCopy}。`
             : ''
+          const cleanup = done.cleanupPending ? '旧落点收尾尚未完成，状态记录与原文快照已保留。' : ''
           return {
             kind: 'success',
-            text: `已激活「${done.name}」，正文写入 ${done.file}。${copied}宿主会在工作区指令里读到它，同时它也直接注入系统提示。`,
+            text: `已激活「${done.name}」，正文写入 ${done.file}。${copied}${cleanup}宿主会在工作区指令里读到它，同时它也直接注入系统提示。`,
           }
         }
 
         if (action === 'deactivate') {
           const done = rules.deactivateRule(home)
+          if (!done.ok) return { kind: 'error', text: done.reason }
           if (done.kept === true) {
             const files = done.skipped.map(item => item.path).join('、')
             return {
@@ -148,6 +150,7 @@ export function registerCommands(ctx, config, runtime) {
 
         if (action === 'reset') {
           const done = rules.resetRules(home)
+          if (!done.ok) return { kind: 'error', text: done.reason }
           const kept = done.skipped.length > 0 ? `；${String(done.skipped.length)} 个落点文件被改过，已保留` : ''
           return { kind: 'success', text: `已清空规则，移除 ${String(done.removed)} 个文件${kept}。` }
         }

@@ -3229,3 +3229,111 @@ test('B8 自动检查失败显示失败态，不显示『已是最新版本』',
   assert.equal(ok.text.includes('已是最新版本'), true)
   assert.equal(ok.notices.length, 0)
 })
+
+
+test('词库未知写入后核对期间及排队操作拒写，旧读取不能解除保护', async () => {
+  const { exported } = loadClient()
+  let disk = [{ from: 'existing', to: 'E' }], fail = true
+  const reads = []
+  const store = exported.createAliasStore({
+    get: () => new Promise(resolve => reads.push(resolve)),
+    put: async (_p, body) => {
+      disk = body.entries
+      if (fail) throw Object.assign(new Error('reply lost'), { code: 'network' })
+      return { data: { entries: disk } }
+    },
+  })
+  const initial = store.read(); reads.shift()({ data: { entries: disk } }); await initial
+  const staleRead = store.read()
+  const a = store.commit({ type: 'save', entry: { from: 'A', to: 'a' } })
+  const queued = store.commit({ type: 'save', entry: { from: 'queued', to: 'q' } })
+  assert.equal((await a).unknown, true)
+  assert.equal((await queued).refused, true)
+  assert.equal(store.state.stale, true)
+  reads.shift()({ data: { entries: [{ from: 'existing', to: 'E' }] } }); await staleRead
+  assert.equal(store.state.stale, true)
+  const checking = store.read()
+  assert.equal((await store.commit({ type: 'save', entry: { from: 'B', to: 'b' } })).refused, true)
+  reads.shift()({ data: { entries: disk } }); await checking
+  fail = false
+  assert.equal((await store.commit({ type: 'save', entry: { from: 'B', to: 'b' } })).ok, true)
+  assert.deepEqual(Array.from(disk, e => e.from), ['existing', 'A', 'B'])
+})
+
+test('规则保存只清理已提交版本，保存期间的新修改与其他编辑器保持原样', async () => {
+  for (const change of [null, { text: 'new draft' }, { name: 'new name' }, { target: 'CLAUDE.md' }, { id: 'other', text: 'other draft' }]) {
+    let reply
+    const rule = { id: 'r', name: 'r', target: 'AGENTS.md' }
+    const edit = { isNew: false, ...rule, text: 'submitted', baseline: { ...rule, text: 'before' } }
+    const h = loadSectionHarness(async () => {}, {
+      hooks: { 0: 'rules', 18: edit, 20: { id: 'r', status: 'ok', text: 'before' } },
+      status: { rules: [rule], activeRule: null },
+      fetch: (_url, init) => init?.method === 'POST' ? new Promise(resolve => { reply = resolve }) : new Promise(() => {}),
+    })
+    let block = findAll(h.render(), n => n.type === h.exported.RulesBlock)[0]
+    block.props.onSave(); await flushMicrotasks()
+    if (change) {
+      block = findAll(h.render(), n => n.type === h.exported.RulesBlock)[0]
+      block.props.onEditChange({ ...block.props.edit, ...change })
+    }
+    reply({ ok: true, status: 200, json: async () => ({ ok: true, code: 'saved', data: rule }) })
+    await flushMicrotasks()
+    const remaining = h.hooks[18].value
+    if (change === null) assert.equal(remaining, null)
+    else {
+      for (const [key, value] of Object.entries(change)) assert.equal(remaining?.[key], value)
+      if (!change.id) assert.equal(remaining.baseline.text, 'submitted')
+    }
+  }
+})
+
+test('取消激活被保留时明确显示仍生效，中英文都不能显示取消成功', async () => {
+  for (const lang of ['zh-CN', 'en']) {
+    const rule = { id: 'r', name: 'r', target: 'AGENTS.md' }
+    const h = loadSectionHarness(async () => {}, { lang, hooks: { 0: 'rules', 20: { id: 'r', status: 'ok', text: 'body' } },
+      status: { rules: [rule], activeRule: 'r' },
+      fetch: (_url, init) => init?.method === 'POST'
+        ? Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, code: 'deactivate_kept', data: { kept: true, active: true, skipped: [{ path: 'AGENTS.md' }] } }) })
+        : new Promise(() => {}),
+    })
+    findAll(h.render(), n => n.type === h.exported.RulesBlock)[0].props.onDeactivate(rule)
+    void h.hooks[12].value.run(); await flushMicrotasks()
+    const notice = h.hooks[14].value.rules
+    assert.equal(notice.tone, 'warn')
+    assert.match(notice.title, lang === 'en' ? /still active/i : /仍在生效/)
+  }
+})
+
+test('保存在途时编辑器换成同 id 的另一次读取，迟到响应不把旧内容当新草稿留下', async () => {
+  let replySave
+  let replyRead
+  const rule = { id: 'r', name: 'r', target: 'AGENTS.md' }
+  const edit = {
+    isNew: true, id: 'r', name: 'r', target: 'AGENTS.md', text: 'submitted', token: 99,
+    baseline: { isNew: true, id: 'r', name: 'r', target: 'AGENTS.md', text: 'submitted' },
+  }
+  const h = loadSectionHarness(async () => {}, {
+    hooks: { 0: 'rules', 18: edit, 20: { id: 'r', status: 'ok', text: 'submitted' } },
+    status: { rules: [], activeRule: null },
+    fetch: (_url, init) => init?.method === 'POST'
+      ? new Promise(resolve => { replySave = resolve })
+      : new Promise(resolve => { replyRead = resolve }),
+  })
+  let block = findAll(h.render(), n => n.type === h.exported.RulesBlock)[0]
+  block.props.onSave(); await flushMicrotasks()
+  // 保存在途：点「打开已有规则」把编辑器换成同 id 的另一次读取（草稿是干净的，不弹确认）。
+  block = findAll(h.render(), n => n.type === h.exported.RulesBlock)[0]
+  block.props.onEdit('r'); await flushMicrotasks()
+  replyRead({ ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', data: { name: '', target: 'AGENTS.md', text: 'refetched' } }) })
+  await flushMicrotasks()
+  assert.equal(h.hooks[18].value.text, 'refetched')
+  replySave({ ok: true, status: 200, json: async () => ({ ok: true, code: 'saved', data: rule }) })
+  await flushMicrotasks()
+  const after = h.hooks[18].value
+  assert.equal(after.text, 'refetched', '迟到响应不许把保存前的内容换回来')
+  assert.equal(after.baseline.text, 'refetched', 'baseline 不许标成刚提交的版本')
+  const notice = h.hooks[14].value.rules
+  assert.equal(notice.tone, 'warn')
+  assert.match(notice.title, /未受影响/)
+  assert.match(notice.next, /没有被改动/)
+})

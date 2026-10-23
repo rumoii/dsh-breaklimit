@@ -22,7 +22,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { hashText, readTextOrNull } from '../src/patch/fsx.js'
-import { createLock } from '../src/patch/lock.js'
+import { acquireFileLock, createLock, lockFilePath, releaseFileLock } from '../src/patch/lock.js'
 import { preflight } from '../src/patch/preflight.js'
 import { readState, statePath } from '../src/patch/state.js'
 import { applyPatches, revertPatches } from '../src/patch/transaction.js'
@@ -170,7 +170,7 @@ test('一个都没采纳时不写清单，返回失败语义，不留下任何�
   assert.deepEqual(Object.keys(result.accepted), [])
   assert.equal(result.rejected.length, 1)
   assert.equal(fs.existsSync(statePath(home)), false, '零采纳时不得生成 state.json')
-  assert.equal(fs.existsSync(path.join(home, 'breaklimit')), false, '零采纳时不该留下任何写入')
+  assert.deepEqual(fs.readdirSync(path.join(home, 'breaklimit')), [], '零采纳只允许留下获取锁所需的空目录')
 })
 
 test('零采纳时已有的 state.json 与旧备份原样保留', () => {
@@ -361,3 +361,37 @@ function initRepo(root, files) {
 function headCommit(root) {
   return git(root, ['rev-parse', 'HEAD']).trim()
 }
+
+
+test('重建在事务锁被占用时拒写，pending 账本原样保留', () => {
+  const root = tempDir(), home = tempDir()
+  write(root, 'a.txt', PATCHED)
+  write(home, 'breaklimit/state.json', '{"phase":"pending","keep":true}')
+  const holder = acquireFileLock(home, 'active-apply')
+  try {
+    assert.throws(() => rebuildState({ hostRoot: root, home, patches: patchSet(), hashes: hashTable(),
+      manifest: { dsh: { commit: HEAD_COMMIT } }, git: fakeGit({ 'a.txt': ORIGINAL }) }), error => error.code === 'locked')
+    assert.equal(read(home, 'breaklimit/state.json'), '{"phase":"pending","keep":true}')
+  } finally { releaseFileLock(holder) }
+})
+
+test('跳过最新的回退备份，旧原文快照仍能采纳；没有有效快照时用 HEAD', () => {
+  for (const hasOld of [true, false]) {
+    const root = tempDir(), home = tempDir()
+    write(root, 'a.txt', PATCHED)
+    write(home, 'breaklimit/transactions/zzz-revert-backup/files/a.txt', PATCHED)
+    if (hasOld) write(home, 'breaklimit/transactions/aaa-apply/files/a.txt', ORIGINAL)
+    const result = rebuildState({ hostRoot: root, home, patches: patchSet(), hashes: hashTable(),
+      manifest: { dsh: { commit: HEAD_COMMIT } }, git: fakeGit({ 'a.txt': ORIGINAL }) })
+    assert.equal(result.written, true)
+    assert.equal(result.snapshotCount, hasOld ? 1 : 0)
+    assert.equal(fs.existsSync(lockFilePath(home)), false)
+  }
+})
+
+test('重建读取失败也释放锁', () => {
+  const root = tempDir(), home = tempDir()
+  assert.throws(() => rebuildState({ hostRoot: root, home, git() { throw new Error('git failed') } }), /git failed/)
+  const holder = acquireFileLock(home, 'next-op')
+  try { assert.equal(holder.conflict, undefined) } finally { releaseFileLock(holder) }
+})

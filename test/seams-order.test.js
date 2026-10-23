@@ -10,10 +10,8 @@
 // tools:sdk 之后；更早的一版还把它定成尾部 order - 1（8998），于是 persona 前缀段
 // 缺失时整段注入（身份 + 正文）落在提示词末尾。
 //
-// 兜底要复现的是正常分支的位置语义：身份在最前。正常分支折进宿主 order 0 的
-// deployment:persona-prefix；兜底段声明 order 1，但落点不靠序号——由数组下标
-// 定：插到下标 0（整个提示词之首）。插入点的数组已经过 stripHostIdentity，宿主
-// 身份段不在其中，「身份在最前、其余段之前」就落在最前。
+// 字面头部放在 persona 前，无 persona 时放首位；独立段保留用户正文中的模板语法。
+// 普通正文的最终字节仍与原来的 persona 前置拼接相同。
 //
 // 驱动的假东西只有 ctx：registerSeams 本体、注入通道、档位读取都走真实代码。
 // DSH_HOME 指向临时目录，不碰真实的 ~/.dsh。
@@ -28,7 +26,6 @@ import { registerSeams } from '../src/host/seams.js'
 import { buildStatus, formatStatusText } from '../src/host/status.js'
 
 const TAIL_ORDER = 8999
-const HEAD_FALLBACK_ORDER = 1
 const INJECT_TEXT = 'INJECT-HEAD'
 
 /** 假 ctx：只记录监听器，并吞掉段落注册。 */
@@ -156,7 +153,6 @@ test('无 persona 前缀段时，兜底段插到提示词之首', async () => {
 
   const head = out.sections.find(section => section.name === 'breaklimit:head')
   assert.ok(head, `兜底段不应丢掉，实际顺序：${ids.join(' → ')}`)
-  assert.equal(head.order, HEAD_FALLBACK_ORDER)
   assert.match(head.text, /INJECT-HEAD/u)
 
   // 下标断言：落点只由下标决定，兜底段插到下标 0（提示词之首）——插入点的
@@ -172,23 +168,29 @@ test('无 persona 前缀段时，兜底段插到提示词之首', async () => {
   assert.ok(at < ids.indexOf('tools:sdk'), '兜底段必须在 tools:sdk 之前')
 })
 
-test('有 persona 前缀段时走正常分支，不产生兜底段', async () => {
+test('有 persona 前缀时，字面注入独立放在它前面，原有模板不变', async () => {
   const sections = [
-    { name: 'deployment:persona-prefix', text: 'Persona.' },
+    { name: 'deployment:preamble', text: 'Preamble.' },
+    { name: 'deployment:persona-prefix', text: 'Persona {{model}}.' },
     { name: 'tools:core', text: 'tools core' },
   ]
   const out = await assemble(sections)
-  const ids = named(out.sections)
-
-  assert.deepEqual(ids, ['deployment:persona-prefix', 'tools:core'])
-  assert.equal(ids.includes('breaklimit:head'), false, `不应出现兜底段：${ids.join(' → ')}`)
-  assert.match(out.sections[0].text, /^INJECT-HEAD/u, '注入文本应折进 persona 前缀段的最前面')
-  assert.match(out.sections[0].text, /Persona\.$/u, '原 persona 文本应保留在后面')
-  // 正常路径护栏：prepend 分支的输出逐字节 = 注入文本 + 空行 + 原 persona。
-  // 注入文本还含包内模式附加段，不写死；用兜底分支取同一份 injectText() 当基准，
-  // 钉住 prepend 分支自己的拼接字节，改动不许波及这里。
+  assert.deepEqual(named(out.sections), ['deployment:preamble', 'breaklimit:head', 'deployment:persona-prefix', 'tools:core'])
+  assert.equal(out.sections[1].interpolate, false)
+  assert.equal(out.sections[2].text, 'Persona {{model}}.')
   const probe = await assemble([])
-  assert.equal(out.sections[0].text, `${probe.sections[0].text}\n\nPersona.`)
+  assert.equal(renderedByHost(out), `Preamble.\n\n${probe.sections[0].text}\n\nPersona {{model}}.\n\ntools core`)
+  assert.equal(sections[1].text, 'Persona {{model}}.', '不修改传入段对象')
+})
+
+test('无 persona 时头部也禁用插值，尾部注册为字面文本', async () => {
+  const out = await assemble([])
+  assert.equal(out.sections[0].interpolate, false)
+  const registered = []
+  const { ctx } = fakeCtx()
+  ctx.systemPrompt.section = section => registered.push(section)
+  registerSeams(ctx, {}, fakeRuntime(), TAIL_ORDER)
+  assert.equal(registered[0].interpolate, false)
 })
 
 test('兜底段插入后，原有段的相对顺序不变，传入数组不被改写', async () => {
@@ -260,9 +262,9 @@ test('complete 组合：注入被宿主丢弃时状态报惰性并给出告警�
   // 替换整份 sections。最终提示词只有 persona 原文，注入与尾部段都不在。
   const { out, runtime, status } = await assembleObserved(sections, () => PERSONA_TEXT)
 
-  // 被丢弃发生在瀑布之后，不在本插件里：瀑布内部那段确实已经折进了注入。
-  const persona = out.sections.find(section => section.name === 'deployment:persona-prefix')
-  assert.match(persona.text, /BREAKLIMIT-INJECTION-MARKER-0123456789/u)
+  // 被丢弃发生在瀑布之后，不在本插件里：瀑布内部已经放入了头部注入。
+  const head = out.sections.find(section => section.name === 'breaklimit:head')
+  assert.match(head.text, /BREAKLIMIT-INJECTION-MARKER-0123456789/u)
   assert.equal(runtime.lastAssembly.injectionDropped, true)
 
   assert.equal(status.injection.inert, true, status.injection.reason)

@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
+import { EventEmitter } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -458,4 +460,92 @@ test('fetchLatestRelease：代理 CONNECT 被拒时报状态码，请求头带 P
   assert.equal(seen.length, 1)
   assert.equal(seen[0].url, 'api.github.com:443')
   assert.equal(seen[0].headers['proxy-authorization'], 'Basic dXNlcjpwYXNz')
+})
+
+
+test('代理在 CONNECT 前及 TLS 握手期间超时后都关闭真实连接', async () => {
+  for (const established of [false, true]) {
+    const sockets = new Set()
+    let accepted
+    const connected = new Promise(resolve => { accepted = resolve })
+    const server = http.createServer()
+    server.on('connection', socket => {
+      sockets.add(socket)
+      socket.on('error', () => {})
+      socket.on('end', () => socket.destroy())
+      socket.on('close', () => sockets.delete(socket))
+      accepted()
+    })
+    server.on('connect', (_request, socket) => {
+      socket.resume()
+      if (established) socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const pending = fetchLatestRelease({ proxy: `http://127.0.0.1:${server.address().port}`, timeoutMs: 250 })
+      const rejected = assert.rejects(pending, error => error.code === 'update_unreachable')
+      await connected
+      await rejected
+      let timer
+      const closed = await Promise.race([
+        new Promise(resolve => {
+          if (sockets.size === 0) resolve(true)
+          else for (const socket of sockets) socket.once('close', () => resolve(true))
+        }),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), 300) }),
+      ])
+      clearTimeout(timer)
+      assert.equal(closed, true, established ? '已建立的隧道必须释放' : 'CONNECT 请求连接必须释放')
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise(resolve => server.close(resolve))
+    }
+  }
+})
+
+test('超时后迟到的 CONNECT 立即关闭 socket，不启动上游请求', async () => {
+  const request = http.request, upstream = https.request
+  const connect = new EventEmitter()
+  connect.end = () => {}
+  connect.destroy = () => {}
+  let calls = 0, destroyed = false
+  http.request = () => connect
+  https.request = () => { calls += 1; throw new Error('must not start') }
+  try {
+    await assert.rejects(fetchLatestRelease({ proxy: 'http://proxy.test', timeoutMs: 10 }), error => error.code === 'update_unreachable')
+    connect.emit('connect', { statusCode: 200 }, { destroy() { destroyed = true } })
+    assert.equal(destroyed, true)
+    assert.equal(calls, 0)
+  } finally { http.request = request; https.request = upstream }
+})
+
+
+test('代理响应正常结束、中断及正文超时均释放已发布资源', async () => {
+  for (const outcome of ['end', 'error', 'aborted', 'timeout']) {
+    const originalHttp = http.request, originalHttps = https.request
+    const connect = new EventEmitter(), upstream = new EventEmitter(), response = new EventEmitter()
+    let released = 0
+    const socket = { destroy() { released |= 1 } }
+    connect.destroy = () => { released |= 2 }
+    upstream.destroy = () => { released |= 4 }
+    response.destroy = () => { released |= 8 }
+    response.statusCode = 200
+    connect.end = () => queueMicrotask(() => connect.emit('connect', { statusCode: 200 }, socket))
+    http.request = () => connect
+    https.request = (_options, callback) => {
+      upstream.end = () => queueMicrotask(() => {
+        callback(response)
+        response.emit('data', Buffer.from('[{"tag_name":"v1.0.0"}]'))
+        if (outcome !== 'timeout') response.emit(outcome, new Error('response failed'))
+      })
+      return upstream
+    }
+    try {
+      const pending = fetchLatestRelease({ proxy: 'http://proxy.test', timeoutMs: 20 })
+      if (outcome === 'end') assert.equal((await pending).latestVersion, '1.0.0')
+      else await assert.rejects(pending, error => error.code === 'update_unreachable')
+      assert.equal(released, 15, `四种资源都释放：${outcome}`)
+      response.emit('error', new Error('late error'))
+    } finally { http.request = originalHttp; https.request = originalHttps }
+  }
 })

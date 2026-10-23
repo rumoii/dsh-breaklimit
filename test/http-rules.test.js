@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events'
 import { bodyLimitFor, createHandler } from '../src/serve/http.js'
 import { savedMessage } from '../src/host/status.js'
 
-function fixture(t, config = {}) {
+function fixture(t, config = {}, runtime = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-http-rules-'))
   const home = path.join(dir, 'home')
   fs.mkdirSync(home, { recursive: true })
@@ -19,7 +19,7 @@ function fixture(t, config = {}) {
     else process.env.DSH_HOME = previous
     fs.rmSync(dir, { recursive: true, force: true })
   })
-  const handler = createHandler({ get() { return undefined } }, config, { enabled: true, counters: {} })
+  const handler = createHandler({ get() { return undefined } }, config, { enabled: true, counters: {}, ...runtime })
   return { home, handler }
 }
 
@@ -435,4 +435,45 @@ test('删除激活中的规则：落点被外部改过时说明快照仍保留',
   assert.match(response.payload.message, /landings\/AGENTS\.md/u)
   assert.equal(fs.existsSync(path.join(home, 'breaklimit', 'landings', 'AGENTS.md')), true)
   assertNoAbsolutePath(response.payload)
+})
+
+
+test('跨落点收尾失败时 HTTP 如实报告新激活与待处理状态，后续状态可见', async t => {
+  const { home, handler } = fixture(t)
+  fs.writeFileSync(path.join(home, 'AGENTS.md'), 'ORIGINAL')
+  await request(handler, 'POST', '/rules/save', { id: 'alpha', text: 'A', target: 'AGENTS.md' })
+  await request(handler, 'POST', '/rules/save', { id: 'beta', text: 'B', target: 'CLAUDE.md' })
+  await request(handler, 'POST', '/rules/activate', { id: 'alpha' })
+  const rename = fs.renameSync
+  fs.renameSync = (from, to) => {
+    if (to === path.join(home, 'AGENTS.md')) throw new Error('old target busy')
+    return rename(from, to)
+  }
+  try {
+    const activated = await request(handler, 'POST', '/rules/activate', { id: 'beta' })
+    assert.equal(activated.status, 200)
+    assert.equal(activated.payload.data.cleanupPending, true)
+    assert.match(activated.payload.message, /新规则已生效.*收尾尚未完成/)
+    assertNoAbsolutePath(activated.payload)
+    const status = await request(handler, 'GET', '/status')
+    assert.equal(status.payload.data.activeRule, 'beta')
+    assert.equal(status.payload.data.pendingActivation.phase, 'cleanup')
+    const blocked = await request(handler, 'POST', '/rules/activate', { id: '' })
+    assert.equal(blocked.status, 409)
+  } finally { fs.renameSync = rename }
+  const off = await request(handler, 'POST', '/rules/activate', { id: '' })
+  assert.equal(off.payload.code, 'deactivated')
+  assert.equal(fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  assert.equal(fs.existsSync(path.join(home, 'CLAUDE.md')), false)
+})
+
+test('status.ensure 的失败文案出网前脱敏：errno 原文不带出绝对路径', async (t) => {
+  const { handler } = fixture(t, {}, {
+    ensure: { error: String.raw`规则清单读不到，已跳过收拢：EACCES: permission denied, open 'C:\Users\rumo\.dsh\rules.json'` },
+  })
+  const status = await request(handler, 'GET', '/status')
+  assert.equal(status.status, 200)
+  assert.equal(typeof status.payload.data.ensure.error, 'string')
+  assert.equal(status.payload.data.ensure.error.includes(String.raw`C:\Users`), false, 'ensure.error 不应带出盘符与用户目录')
+  assertNoAbsolutePath(status.payload)
 })

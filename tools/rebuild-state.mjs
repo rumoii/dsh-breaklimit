@@ -37,6 +37,7 @@ import { resolveHome, statePath, transactionDir, transactionsDir, writeState } f
 import { revertSnippets } from '../src/patch/preflight.js'
 import { DSH_TARGET, PATCHES, replaceVariantsByPath } from '../src/patch/index.js'
 import { loadPatchHashes } from '../src/patch/hashes.js'
+import { acquireFileLock, releaseFileLock } from '../src/patch/lock.js'
 
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const HASHES_FILE = path.join(PACKAGE_ROOT, 'src', 'patch', 'hashes.json')
@@ -141,7 +142,21 @@ export function backupTarget(destination, stamp = new Date().toISOString().repla
  *   written: boolean, backup: string | null, exitCode: number }}
  *   一个都没采纳时 written 为 false、exitCode 为 2，清单不落盘。
  */
-export function rebuildState({
+export function rebuildState(options) {
+  const handle = acquireFileLock(options.home, `rebuild-${process.pid}-${Date.now()}`)
+  if (handle.conflict !== undefined) {
+    const error = new Error('另一个操作持有事务锁，状态重建已取消')
+    error.code = 'locked'
+    throw error
+  }
+  try {
+    return rebuildStateLocked(options)
+  } finally {
+    releaseFileLock(handle)
+  }
+}
+
+function rebuildStateLocked({
   hostRoot,
   home,
   patches = PATCHES,
@@ -176,7 +191,7 @@ export function rebuildState({
   const findSnapshot = (relative) => {
     for (const name of dirs) {
       const text = readTextOrNull(path.join(txnRoot, name, 'files', relative))
-      if (text !== null) return { text, from: name }
+      if (text !== null && hashText(text) === declaredByPath.get(relative)) return { text, from: name }
     }
     return null
   }

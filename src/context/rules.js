@@ -21,8 +21,8 @@
 //
 // 写序与互斥（#4 #6）：
 //   落点正文可能被外部改动，而清单只有一个入口。所以写落点之前先把激活意图写进
-//   清单（active/landing + pendingActivation 标记），落点写成功再清掉标记；任何一步
-//   失败都回滚，绝不留下「落点已换、清单说没激活」。五个写入口都在同一把跨进程锁内
+//   清单（active/landing + pendingActivation 标记），写落点并提交；跨落点提交后以
+//   cleanup 阶段续做旧落点收尾。提交前失败回滚，提交后保留新激活与收尾依据。写入口在同一把跨进程锁内
 //   完成「读清单 → 改 → 写清单」，清单另有 revision 递增做第二道版本校验。
 
 import fs from 'node:fs'
@@ -160,6 +160,19 @@ function withRulesLock(home, operation, run) {
     return failure('locked', `规则正在被${who}占用，本次操作已取消`)
   }
   try {
+    const index = readIndex(home)
+    if (operation !== 'cleanup' && index.pendingActivation?.phase === 'cleanup') {
+      const resumed = finishActivationCleanup(home, index)
+      // 收尾记录与清单对不上（stale）不是重试能解决的：放行取消激活/重置，让它们
+      // 按自身逻辑写 pendingActivation: null 清掉这份记录；其余写入口仍挡下，
+      // 但报错如实说明成因，不冒充「读写故障」。
+      const staleClear = resumed.stale === true && (operation === 'deactivate' || operation === 'reset')
+      if (resumed.cleanupPending && !staleClear) {
+        return failure('conflict', resumed.stale === true
+          ? '旧落点收尾记录与规则清单不一致，无法自动续做；请先取消激活当前规则或重置规则以清除该记录'
+          : '新规则已激活，旧落点收尾尚未完成；请处理读取或写入故障后重试')
+      }
+    }
     return run()
   } finally {
     releaseFileLock(handle)
@@ -220,7 +233,7 @@ function normalizeLanding(raw) {
 }
 
 /**
- * 未提交的激活意图。字段不全就返回 null——读不出意图时按「没有未完成激活」处理，
+ * 激活意图或已提交后的收尾记录。旧记录无 phase，保持原有诊断语义。字段不全返回 null，
  * 落点处置仍然只看 landings 快照，不靠意图推断。
  */
 function normalizePending(raw) {
@@ -236,6 +249,7 @@ function normalizePending(raw) {
     snapshot: raw.snapshot === true,
     previous,
     startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : null,
+    ...(raw.phase === 'cleanup' ? { phase: 'cleanup' } : {}),
   }
 }
 
@@ -248,8 +262,8 @@ function emptyIndex() {
  * 「读不到」（权限、占用、句柄耗尽）单独报 `unreadable` 并带上原因：它与「文件
  * 不存在」只差一步，混同就会让调用方把读失败当成空清单整表替换掉。
  *
- * `revision` 是写入版本号，缺省按 0 读；`pendingActivation` 是未提交的激活意图，
- * 只用于诊断与恢复，处置落点时不用它。
+ * `revision` 缺省按 0 读；`pendingActivation` 记录激活意图，phase=cleanup 时
+ * 新激活已经提交，previous 是尚待处置的旧落点。
  *
  * `invalidTargets` 是读取期的诊断，不进清单：记录 target 非法、被回落成 `AGENTS.md`
  * 的那些规则。列表照常展示（清单坏了不该让插件不可用），但 `activateRule` 拿它拒绝
@@ -359,7 +373,7 @@ function writeIndex(home, index, expectedRevision, { allowCorruptOverwrite = fal
   )
   fs.mkdirSync(path.dirname(file), { recursive: true })
   try {
-    fs.writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+    atomicWrite(temp, `${JSON.stringify(payload, null, 2)}\n`)
     if (expectedRevision !== undefined && readIndex(home).revision !== expectedRevision) {
       throw conflictError()
     }
@@ -660,7 +674,7 @@ function skipEntry(file, reason, expected, actual) {
  * @returns {{ removed: boolean, restored: boolean,
  *   skipped: Array<{ path: string, reason: string, expected: string | null, actual: string | null }> }}
  */
-function settleLanding(home, landing, ourText) {
+function settleLanding(home, landing, ourText, { keepSnapshot = false } = {}) {
   const result = { removed: false, restored: false, skipped: [] }
   if (landing === null) return result
   const file = targetPath(home, landing.target)
@@ -711,7 +725,7 @@ function settleLanding(home, landing, ourText) {
   }
   try {
     atomicWriteBytes(file, before.bytes)
-    fs.rmSync(landingPath(home, landing.target), { force: true })
+    if (!keepSnapshot) fs.rmSync(landingPath(home, landing.target), { force: true })
     result.restored = true
   } catch {
     // 写回失败：expected 是没写成功的那份原文，actual 是落点当前内容。
@@ -791,16 +805,49 @@ function rollbackIndex(home, previousIndex, expectedRevision) {
   }
 }
 
+/** 新激活已提交后续做旧落点收尾。清掉意图前保留快照，重入时能识别已恢复的原文。 */
+function finishActivationCleanup(home, index) {
+  const pending = index.pendingActivation
+  const previousLanding = { removed: false, restored: false, skipped: [] }
+  if (pending?.phase !== 'cleanup') return { index, previousLanding, cleanupPending: false }
+  const previous = pending.previous
+  const landing = previous?.landing
+  if (index.active !== pending.id || index.landing?.target !== pending.target
+    || landing == null || landing.target === pending.target) {
+    // 记录与清单对不上（清单被不守锁的写者改过）：这不是重试能解决的故障，标成
+    // stale，让停止类操作有机会清掉这份记录，而不是把所有写入口永久挡成 409。
+    return { index, previousLanding, cleanupPending: true, stale: true }
+  }
+  const current = readTargetState(home, landing.target)
+  const before = readBytesStrict(landingPath(home, landing.target))
+  let settlement
+  if (!landing.created && before.kind === 'ok' && current.kind === 'ok' && current.bytes.equals(before.bytes)) {
+    settlement = { removed: false, restored: true, skipped: [] }
+  } else {
+    const previousBody = previous.id === null ? null : readRule(home, previous.id)
+    settlement = settleLanding(home, landing, previousBody?.ok ? previousBody.text : null, { keepSnapshot: true })
+  }
+  // 外部改动是明确的终态，保留原文快照并报告；I/O 故障则保留意图，等待重试。
+  const retry = settlement.skipped.some(item => item.reason !== '内容已被改动，保留原样')
+  if (retry) return { index, previousLanding: settlement, cleanupPending: true }
+  try {
+    const revision = writeIndex(home, { ...index, pendingActivation: null }, index.revision)
+    if (settlement.restored) discardSnapshot(home, landing.target, true)
+    return { index: { ...index, pendingActivation: null, revision }, previousLanding: settlement, cleanupPending: false }
+  } catch {
+    return { index, previousLanding: settlement, cleanupPending: true }
+  }
+}
+
 /**
  * 激活一条规则：写激活意图 → 写落点 → 提交意图。
  *
  * 顺序不能倒。落点先写，清单写失败时落点已是新正文而 active 是 null，
  * `landings/<target>.txt` 就失去唯一入口，用户原文永久不可恢复（#4）。先写意图，
- * 任何一步失败都能回滚到「落点原样、清单原样」；进程在中间被杀也留得下
+ * 提交前失败尝试回滚，提交后只续做旧落点收尾；进程在中间被杀也留得下
  * `active`/`landing` 与 `pendingActivation`，恢复入口不丢。
  *
- * 接管新落点之前先处置上一条激活规则的落点，否则 A@AGENTS 切到 B@CLAUDE 会把 A 的
- * 正文永久留在 AGENTS.md 里。
+ * 跨落点在新激活提交后处置旧落点。cleanup 意图保留旧归属与快照，中断后可续做。
  *
  * 同落点切换时，`landings/<target>.txt` 保存的是**插件第一次接管该落点时的原文**：
  * 只要这份快照还在就沿用，不拿当前落点内容覆盖它。返回值里的 `snapshotKept` 说明
@@ -829,7 +876,8 @@ function activateRuleLocked(home, id) {
   const entry = index.rules.find(rule => rule.id === id)
   const meta = normalizeMeta(id, entry ?? {})
   const file = targetPath(home, meta.target)
-  const previous = index.active === null ? null : { id: index.active, landing: index.landing }
+  const previous = index.active === null && index.landing === null ? null : { id: index.active, landing: index.landing }
+  const previousText = index.active === null ? null : activeRuleTextOrNull(home)
 
   // 同一条规则、同一个落点：保留最初的快照。若在这里重新记一次，取消激活就会把
   // 我们刚写进去的正文当成「用户原有内容」恢复回去。
@@ -838,11 +886,7 @@ function activateRuleLocked(home, id) {
     && index.landing.target === meta.target
 
   let previousLanding = { removed: false, restored: false, skipped: [] }
-  if (!sameRuleSameTarget && index.active !== null) {
-    // 同一条规则换落点时正文刚从磁盘读出来，直接用它；否则读激活中那条的正文。
-    const previousText = index.active === id ? loaded.text : activeRuleTextOrNull(home)
-    previousLanding = settleLanding(home, index.landing, previousText)
-  }
+  const differentTarget = previous?.landing != null && previous.landing.target !== meta.target
 
   const existingState = readTargetState(home, meta.target)
   if (existingState.kind === 'unreadable') {
@@ -851,31 +895,33 @@ function activateRuleLocked(home, id) {
   }
   const existing = existingState.kind === 'ok' ? existingState.bytes : null
 
-  // 落点仍归插件管、快照也还在：这份快照记的是插件第一次接管该落点时的原文。
-  // 此时不能拿当前落点内容覆盖它——用户手改过落点，再激活另一条到同一落点，就会把
-  // 第一次激活前的原文从插件目录里彻底冲掉。正常切换走到这里时 settleLanding 已经把
-  // 原文写回落点并删掉快照，读不到快照，仍按下面的流程记新的。
-  //
-  // `active` 为 null 但 `landing` 还在，是「删除激活规则时落点没被处置」留下的归属：
-  // 快照归这个落点，重新激活到同一落点时同样不能覆盖它。
-  const slotOwned = !sameRuleSameTarget
-    && index.landing !== null
-    && index.landing.target === meta.target
+  // 同落点切换沿用首次接管的原文，不先恢复再重建快照。
+  const slotOwned = !sameRuleSameTarget && index.landing !== null && index.landing.target === meta.target
   const snapshotState = readBytesStrict(landingPath(home, meta.target))
   if (snapshotState.kind === 'unreadable') {
     // 快照读不到就停：这时任何写入都可能让「唯一一份原文」失去恢复路径。
     return failure('snapshot_unreadable', `激活前原文快照读不到，激活已取消：${messageOf(snapshotState.error)}`)
   }
   const snapshotKept = slotOwned && snapshotState.kind === 'ok'
+  const currentOurs = existing !== null && (index.landing?.writtenHash != null
+    ? hashBytes(existing) === index.landing.writtenHash
+    : previousText !== null && existing.equals(Buffer.from(previousText, 'utf8')))
+  const retainOwned = slotOwned && (snapshotKept || (index.landing.created && (existing === null || currentOurs)))
+  if (slotOwned && !index.landing.created && snapshotState.kind === 'missing') {
+    return failure('snapshot_missing', '找不到首次接管前的原文，激活已取消')
+  }
+  if (slotOwned && existing !== null && !currentOurs) {
+    previousLanding.skipped.push(skipEntry(file, '内容已被改动，保留原样',
+      index.landing.writtenHash == null ? previousText : prehashed(index.landing.writtenHash), existing))
+  }
   const nextBytes = Buffer.from(loaded.text, 'utf8')
-  // writtenHash：我们写进落点的字节哈希。内容本就一致、没重写也算——落点里就是它。
   const writtenHash = hashBytes(nextBytes)
-  const landing = sameRuleSameTarget || snapshotKept
+  const landing = sameRuleSameTarget || retainOwned
     ? { ...index.landing, writtenHash }
     : { target: meta.target, created: existing === null, writtenHash }
   let snapshotWritten = false
   let keptCopy = null
-  if (!sameRuleSameTarget && !snapshotKept && existing !== null) {
+  if (!sameRuleSameTarget && !retainOwned && existing !== null) {
     // canonical 路径上若有快照却没归属（slotOwned 为 false），它是孤儿：切换落点时
     // 旧落点被判 skipped，丢掉归属的「首次接管前原文」唯一副本。先搬成保留副本再写
     // 新快照，不许拿新快照把它冲掉；搬不走就取消激活，宁可不写。
@@ -929,7 +975,6 @@ function activateRuleLocked(home, id) {
     // 本次刚写的快照存的就是现有字节；沿用的快照记的是首次接管时的原文。
     if (snapshotWritten) covered.push(existing)
     else if (snapshotState.kind === 'ok') covered.push(snapshotState.bytes)
-    const previousText = index.active === null ? null : activeRuleTextOrNull(home)
     if (previousText !== null) covered.push(Buffer.from(previousText, 'utf8'))
     if (!covered.some(bytes => bytes.equals(existing))) {
       try {
@@ -955,7 +1000,9 @@ function activateRuleLocked(home, id) {
 
   let revision
   try {
-    revision = writeIndex(home, { ...intent, pendingActivation: null }, intentRevision)
+    revision = writeIndex(home, { ...intent, pendingActivation: differentTarget
+      ? { ...intent.pendingActivation, phase: 'cleanup' }
+      : null }, intentRevision)
   } catch (error) {
     // 落点已经是新正文。先恢复落点，再决定动不动清单：顺序反了就会留下
     // 「落点已改、清单说没激活」，这正是 #4 要消灭的状态。
@@ -1002,6 +1049,14 @@ function activateRuleLocked(home, id) {
     )
   }
 
+  let cleanupPending = false
+  if (differentTarget) {
+    const cleaned = finishActivationCleanup(home, readIndex(home))
+    previousLanding = cleaned.previousLanding
+    cleanupPending = cleaned.cleanupPending
+    revision = cleaned.index.revision
+  }
+
   return {
     ok: true,
     id,
@@ -1011,6 +1066,10 @@ function activateRuleLocked(home, id) {
     bytes: Buffer.byteLength(loaded.text, 'utf8'),
     created: landing.created,
     previousLanding,
+    cleanupPending,
+    // 上一条落点是否与新落点不同：报告层据此分辨「旧落点被本次激活覆盖」
+    // （同落点切换）与「旧落点未动、保持现状」（跨落点收尾）两种 skipped。
+    differentTarget,
     snapshotKept,
     externalCopy,
     keptCopy,
@@ -1162,7 +1221,14 @@ export function resetRules(home) {
  * 字节一致时不重写落点，非 UTF-8 的落点跳过收拢、原样保留（见 skipped）。
  */
 export function ensureInitialState(home) {
-  const index = readIndex(home)
+  let index = readIndex(home)
+  if (index.pendingActivation?.phase === 'cleanup') {
+    const resumed = withRulesLock(home, 'cleanup', () => finishActivationCleanup(home, readIndex(home)))
+    index = readIndex(home)
+    if (resumed.ok === false || resumed.cleanupPending) {
+      return { active: index.active, imported: null, error: resumed.reason ?? '旧落点收尾尚未完成', cleanupPending: true }
+    }
+  }
   if (index.kind === 'corrupt') return { active: null, imported: null, corrupt: true }
   if (index.kind === 'unreadable') {
     return { active: null, imported: null, error: `规则清单读不到，已跳过收拢：${index.error ?? '未知读取错误'}` }

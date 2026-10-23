@@ -389,6 +389,11 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
           message: redactPathInText(status.inject.message, status.inject.file),
         },
         lock: { ...status.lock, file: redactPath(status.lock.file) },
+        // 装载期收拢结果的失败文案是 errno 原文，可能带盘符与用户目录；
+        // 出网前同样脱敏（status.ensure 仅在失败态携带 error 字符串）。
+        ensure: status.ensure !== null && status.ensure !== undefined && typeof status.ensure.error === 'string'
+          ? { ...status.ensure, error: redactPathsInText(status.ensure.error) }
+          : status.ensure,
         // 清单路径要能让用户去磁盘上找：只留 `…/rules.json` 等于没给。
         rulesIndexPath: relHomePath(status.rulesIndexPath, home()),
       })
@@ -533,7 +538,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         rules: rules.listRules(home()),
         rulesIndex: index.kind,
         rulesIndexPath: relHomePath(rules.rulesIndexPath(home()), home()),
-        // 未提交的激活意图：字段是 id/target/created/snapshot/previous/startedAt，
+        // 激活意图或 phase=cleanup 的提交后收尾记录，
         // 不含绝对路径，原样透出；没有未完成激活时为 null。
         pendingActivation: index.pendingActivation ?? null,
       })
@@ -610,17 +615,24 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
         return envelope(rulesFailureStatus(done.code), 'rule_invalid', redactPathsInText(done.reason))
       }
-      // 落点被外部改过时不能说「已保留」了事：snapshotKept 为 true 才是首次接管时
-      // 的那份原文仍在；否则本次激活会直接覆盖落点上的内容。
-      const switched = done.previousLanding?.skipped?.length > 0
-        ? (done.snapshotKept === true
-          ? '；上一条的落点被外部改过，未动它，首次接管时的原文快照仍在'
-          : '；上一条的落点被外部改过，本次激活会覆盖它')
-        : done.previousLanding?.restored === true
-          ? '；上一条的落点已还原'
-          : done.previousLanding?.removed === true
-            ? '；上一条的落点已清除'
-            : ''
+      // 新规则生效与旧落点收尾分开报告。skipped 的含义分两种，不能一律说「副本已保留」：
+      // 同落点切换时旧内容会被本次激活覆盖（覆盖前内容有 externalCopy 副本）；
+      // 跨落点收尾时旧落点未被覆盖也未还原，保持现状，且部分原因（原文缺失/读不到）
+      // 根本没有可恢复的副本，不能让人误以为原文可追回。
+      const skipped = done.previousLanding?.skipped ?? []
+      const switched = done.cleanupPending === true
+        ? '；新规则已生效，旧落点收尾尚未完成，状态记录与原文快照已保留'
+        : skipped.length > 0
+          ? done.differentTarget === true
+            ? '；上一条落点未被覆盖也未还原，保持现状；处置明细见 skipped'
+            : '；同一落点上的外部改动已被本次激活覆盖'
+              + (done.externalCopy != null ? '，覆盖前的内容留了副本' : '')
+              + (done.snapshotKept === true ? '，首次接管时的原文快照仍在' : '')
+          : done.previousLanding?.restored === true
+            ? '；上一条的落点已还原'
+            : done.previousLanding?.removed === true
+              ? '；上一条的落点已清除'
+              : ''
       const externalCopy = typeof done.externalCopy === 'string'
         ? relHomePath(done.externalCopy, home())
         : null

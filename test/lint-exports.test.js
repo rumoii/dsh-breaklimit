@@ -100,3 +100,12 @@ test('检查真实仓库时通过', () => {
   const { problems } = checkTree(root)
   assert.deepEqual(problems, [], `仓库自身有接口不一致：\n${problems.join('\n')}`)
 })
+
+test('抓出目标被删留下的坏 import；外部包不检查', () => {
+  const problems = check({
+    'b.js': "import { gone } from './deleted.js'\nimport { kept } from 'some-package'\n",
+  })
+  assert.equal(problems.length, 1)
+  assert.match(problems[0], /无法解析的 import/u)
+  assert.match(problems[0], /deleted\.js/u)
+})

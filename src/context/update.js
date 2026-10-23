@@ -304,67 +304,87 @@ function requestViaProxy(url, proxyUrl, timeoutMs, headers) {
     }
 
     let settled = false
+    let connectRequest, tunnel, upstream, responseBody, timer
     const finish = (fn, value) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      responseBody?.destroy()
+      upstream?.destroy()
+      tunnel?.destroy()
+      connectRequest?.destroy()
       fn(value)
     }
 
-    const timer = setTimeout(() => {
+    let auth
+    try { auth = proxyAuthHeader(proxy) } catch {
+      reject(new UpdateError('update_unreachable', '代理凭据无法解析。'))
+      return
+    }
+    timer = setTimeout(() => {
       finish(reject, new UpdateError('update_unreachable', '连接 GitHub 超时。'))
-      connectRequest.destroy()
     }, timeoutMs)
-
-    const auth = proxyAuthHeader(proxy)
     const connectHeaders = { Host: `${target.hostname}:443` }
     if (auth !== null) connectHeaders['Proxy-Authorization'] = auth
 
-    const connectRequest = http.request({
-      host: proxy.hostname,
-      port: proxy.port === '' ? 80 : Number(proxy.port),
-      method: 'CONNECT',
-      path: `${target.hostname}:443`,
-      headers: connectHeaders,
-    })
+    try {
+      connectRequest = http.request({
+        host: proxy.hostname,
+        port: proxy.port === '' ? 80 : Number(proxy.port),
+        method: 'CONNECT',
+        path: `${target.hostname}:443`,
+        headers: connectHeaders,
+      })
 
-    connectRequest.on('connect', (response, socket) => {
-      if (response.statusCode !== 200) {
-        socket.destroy()
-        // 407 也要报成「连不上」：上层只需要知道这次检查没成。
-        finish(reject, new UpdateError('update_unreachable', `代理拒绝了连接（${String(response.statusCode)}）。`))
-        return
-      }
-      const upstream = https.request({
-        host: target.hostname,
-        port: 443,
-        servername: target.hostname,
-        method: 'GET',
-        path: `${target.pathname}${target.search}`,
-        headers: { ...headers, Host: target.hostname },
-        // agent: false 是必须的：有默认 agent 时 Node 会忽略传入的 socket 另开连接，
-        // 隧道就白建了。
-        agent: false,
-        socket,
-      }, res => {
-        const chunks = []
-        res.on('data', chunk => { chunks.push(chunk) })
-        res.on('end', () => {
+      connectRequest.on('connect', (response, socket) => {
+        if (settled) { socket.destroy(); return }
+        tunnel = socket
+        if (response.statusCode !== 200) {
           socket.destroy()
-          finish(resolve, { status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') })
-        })
+          // 407 也要报成「连不上」：上层只需要知道这次检查没成。
+          finish(reject, new UpdateError('update_unreachable', `代理拒绝了连接（${String(response.statusCode)}）。`))
+          return
+        }
+        try {
+          upstream = https.request({
+            host: target.hostname,
+            port: 443,
+            servername: target.hostname,
+            method: 'GET',
+            path: `${target.pathname}${target.search}`,
+            headers: { ...headers, Host: target.hostname },
+            // agent: false 是必须的：有默认 agent 时 Node 会忽略传入的 socket 另开连接，
+            // 隧道就白建了。
+            agent: false,
+            socket,
+          }, res => {
+            if (settled) { res.destroy(); return }
+            responseBody = res
+            const failed = () => finish(reject, new UpdateError('update_unreachable', '经代理读取响应失败。'))
+            res.on('error', failed)
+            res.on('aborted', failed)
+            const chunks = []
+            res.on('data', chunk => { chunks.push(chunk) })
+            res.on('end', () => {
+              finish(resolve, { status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') })
+            })
+          })
+          upstream.on('error', () => {
+            finish(reject, new UpdateError('update_unreachable', '经代理读取响应失败。'))
+          })
+          upstream.end()
+        } catch {
+          finish(reject, new UpdateError('update_unreachable', '经代理建立请求失败。'))
+        }
       })
-      upstream.on('error', () => {
-        socket.destroy()
-        finish(reject, new UpdateError('update_unreachable', '经代理读取响应失败。'))
-      })
-      upstream.end()
-    })
 
-    connectRequest.on('error', () => {
+      connectRequest.on('error', () => {
+        finish(reject, new UpdateError('update_unreachable', '连不上代理。'))
+      })
+      connectRequest.end()
+    } catch {
       finish(reject, new UpdateError('update_unreachable', '连不上代理。'))
-    })
-    connectRequest.end()
+    }
   })
 }
 
