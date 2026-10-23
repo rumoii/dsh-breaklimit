@@ -1025,6 +1025,9 @@ function loadSectionHarness(writeTextImpl, options = {}) {
     exported,
     timerLog,
     cleanups,
+    // hooks 槽原样露出：用例要断言的是状态本身（status 换没换、dialog 关没关、
+    // 草稿丢没丢），只看渲染树证明不了这些。
+    hooks,
     render: (props) => {
       hookIndex = 0
       return component(props)
@@ -2869,4 +2872,360 @@ test('A5 explain：bad_response 有独立标题与下一步（中英两套），
   const notice2 = findAll(writeFailed.render(), n => n.type === writeFailed.exported.Notice && n.props?.notice?.code === 'write_failed')[0]
   assert.equal(Boolean(notice2), true, '错误信封的 code 应原样透出到 explain')
   assert.equal(notice2.props.notice.title, '写不进磁盘', 'write_failed 仍翻成 errWrite 文案')
+})
+
+// ---- B8 前端缺陷回归 -------------------------------------------------------
+//
+// 每条用例断言的都是「修好后才成立」的事实：过期响应不覆盖新数据、结果未知不误报
+// 失败、删除按条目身份锚定、上限以 limits 为准、草稿不丢、读回即夹边、迟到 render
+// 不重开弹窗、自动检查失败如实显示。
+
+// request() 的信封契约桩：resolve 给类 Response 对象，json() 给信封。
+const makeResponse = (data, message = '') => ({ ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', message, data }) })
+
+// 永不落定的 fetch，逐笔记录，由用例决定何时 resolve 哪一笔：能精确制造
+// 「先发后到」与「请求在途中用户已关掉弹窗」两类时序。
+function deferredFetch() {
+  const log = []
+  const fetch = (url, init) => new Promise((resolve) => { log.push({ url: String(url), init, resolve }) })
+  return { log, fetch }
+}
+
+test('B8 load() 请求序号：先发后到的旧响应不覆盖新数据', async () => {
+  const { log, fetch } = deferredFetch()
+  const harness = loadSectionHarness(async () => {}, { fetch })
+  harness.render() // load #1：四路请求在途
+  harness.render() // load #2
+  const statusOf = (version, pendingFiles) => ({
+    hostRoot: '/test-host',
+    target: { version, commit: 'abc1234' },
+    mode: 'danger-full-access',
+    preflight: { ok: true, code: 'ok', blocked: [], pendingFiles },
+    inject: { ok: true },
+    rules: [],
+    activeRule: null,
+  })
+  const respondLoad = (n, { version, pendingFiles, tier }) => {
+    const pick = (suffix) => log.filter((call) => call.url.endsWith(suffix))[n]
+    pick('/status').resolve(makeResponse(statusOf(version, pendingFiles)))
+    pick('/patches').resolve(makeResponse({ patches: [] }))
+    pick('/override').resolve(makeResponse({ text: 'body', userFileExists: false }))
+    pick('/tier').resolve(makeResponse({ tier }))
+  }
+  assert.equal(log.filter((call) => call.url.endsWith('/status')).length, 2, '两次 load 应各发一次 GET /status')
+  // 后发的 load #2 先落定
+  respondLoad(1, { version: 'NEW-1', pendingFiles: 3, tier: 'unrestricted' })
+  await flushMicrotasks()
+  assert.equal(harness.hooks[1].value.target.version, 'NEW-1')
+  // 先发的 load #1 迟到落定：必须整体作废
+  respondLoad(0, { version: 'OLD-1', pendingFiles: 7, tier: 'recommended' })
+  await flushMicrotasks()
+  assert.equal(harness.hooks[1].value.target.version, 'NEW-1', '旧响应覆盖了新状态')
+  assert.equal(harness.hooks[7].value.tier, 'unrestricted', '旧响应覆盖了新档位')
+  const tree = harness.render()
+  assert.equal(findAll(tree, (n) => n.type === 'span' && n.props?.title === '3 个文件待写入').length, 1, '渲染应反映新响应')
+  assert.equal(findAll(tree, (n) => n.type === 'span' && n.props?.title === '7 个文件待写入').length, 0, '不许渲染旧响应的数据')
+})
+
+// 浮窗（AliasRow）行为测试的桩：useState/useRef 按调用序落槽（open 是第 6 个
+// useState），fetch 按路由作答并逐笔记录。effect 不自动跑：挂载副作用会污染
+// fetch 日志，日志里只留用例自己点出来的请求。
+function loadDockHarness(options = {}) {
+  let registration
+  const slots = []
+  const fetchLog = []
+  const dispatched = []
+  let hookIndex = 0
+  let aliasEntries = options.aliasEntries ?? []
+  let tierValue = options.tier ?? 'recommended'
+  let tierReadFails = false
+  let postTier = () => Promise.resolve(makeResponse({ tier: 'unrestricted' }))
+  const react = {
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+    useState: (initial) => {
+      const i = hookIndex++
+      if (slots[i] === undefined) slots[i] = { value: typeof initial === 'function' ? initial() : initial }
+      const slot = slots[i]
+      return [slot.value, (next) => { slot.value = typeof next === 'function' ? next(slot.value) : next }]
+    },
+    useEffect() {},
+    useCallback: (fn) => fn,
+    useRef: (current) => {
+      const i = hookIndex++
+      if (slots[i] === undefined) slots[i] = { value: { current } }
+      return slots[i].value
+    },
+  }
+  const sandbox = {
+    CustomEvent: class CustomEventStub { constructor(type) { this.type = type } },
+    window: {
+      __ModuleLoader__: { load(value) { registration = value } },
+      innerWidth: options.viewport?.width ?? 1024,
+      innerHeight: options.viewport?.height ?? 768,
+      dispatchEvent(event) { dispatched.push(event?.type ?? ''); return true },
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    document: { head: null, documentElement: { lang: 'zh-CN' }, getElementById() { return null } },
+    navigator: { language: 'zh-CN' },
+    localStorage: options.localStorage ?? { getItem() { return null }, setItem() {} },
+    fetch: (url, init) => {
+      const path = String(url)
+      const method = init?.method ?? 'GET'
+      fetchLog.push({ method, path, body: init?.body ?? null })
+      if (method === 'POST' && path === '/breaklimit/tier') return postTier(init)
+      if (method === 'PUT' && path === '/breaklimit/alias') {
+        const next = JSON.parse(init.body).entries
+        aliasEntries = next
+        return Promise.resolve(makeResponse({ entries: next.map((entry) => ({ ...entry })) }))
+      }
+      if (path === '/breaklimit/alias') {
+        return Promise.resolve(makeResponse({ entries: aliasEntries.map((entry) => ({ ...entry })), limits: { maxEntries: 100, maxTerm: 64 }, lastHits: 0 }))
+      }
+      if (path === '/breaklimit/tier') {
+        return tierReadFails
+          ? Promise.reject(Object.assign(new Error('offline'), { name: 'TypeError' }))
+          : Promise.resolve(makeResponse({ tier: tierValue }))
+      }
+      return new Promise(() => {})
+    },
+  }
+  vm.runInNewContext(fs.readFileSync(CLIENT, 'utf8'), sandbox)
+  const exported = registration.factory(() => react)
+  if (options.hooks) for (const [index, value] of Object.entries(options.hooks)) slots[Number(index)] = { value }
+  return {
+    exported,
+    fetchLog,
+    dispatched,
+    setAlias: (entries) => { aliasEntries = entries },
+    setTier: (value) => { tierValue = value },
+    setTierReadFails: (value) => { tierReadFails = value },
+    setPostTier: (handler) => { postTier = handler },
+    render: () => {
+      hookIndex = 0
+      return exported.AliasRow({})
+    },
+  }
+}
+
+test('B8 浮窗切档：超时/断网按结果未知处理并读回核对，明确失败才说没切', async () => {
+  const harness = loadDockHarness({ hooks: { 5: true } })
+  const { exported } = harness
+  exported.aliasStore.state.phase = 'ready'
+  const panel = (tree) => textOf(findAll(tree, (n) => n.props?.role === 'dialog')[0])
+  const cards = (tree) => findAll(tree, (n) => n.type === 'button' && n.props?.className === 'dock-mode-card')
+  const confirm = (tree) => findAll(tree, (n) => n.type === 'button' && n.props?.['aria-label'] === '切换')[0]
+
+  // 场景一：POST 超时但实际已写入 —— 结果未知 + 读回核对，不许误报失败。
+  let tree = harness.render()
+  cards(tree)[1].props.onClick() // 选中「完全解放」
+  tree = harness.render()
+  harness.setTier('unrestricted') // 后端实际已切
+  harness.setPostTier(() => Promise.reject(Object.assign(new Error('slow'), { name: 'AbortError' })))
+  confirm(tree).props.onClick()
+  await flushMicrotasks()
+  tree = harness.render()
+  assert.equal(panel(tree).includes('已重新读取核对，显示的即当前实际档位'), true, '超时应显示结果未知并说明已核对')
+  assert.equal(panel(tree).includes('切换失败，当前仍是原来那档'), false, '超时不能误报切换失败')
+  assert.equal(cards(tree)[1].props['aria-pressed'], 'true', '档位应跟随读回结果')
+  assert.equal(cards(tree)[0].props['aria-pressed'], 'false')
+  assert.equal(harness.fetchLog.filter((call) => call.method === 'GET' && call.path === '/breaklimit/tier').length, 1, '超时后必须重新读取核对')
+  assert.equal(harness.dispatched.filter((type) => type === 'bkl:state-changed').length, 1, '结果未知但核对成功后要广播状态变更，设置区才不陈旧')
+
+  // 场景二：明确失败（如预检阻断）—— 才说没切，且不属于结果未知。
+  harness.setPostTier(() => Promise.resolve({ ok: false, status: 409, json: async () => ({ ok: false, code: 'preflight_blocked', message: '', data: null }) }))
+  cards(tree)[0].props.onClick() // 切回「推荐」
+  tree = harness.render()
+  confirm(tree).props.onClick()
+  await flushMicrotasks()
+  tree = harness.render()
+  assert.equal(panel(tree).includes('切换失败，当前仍是原来那档'), true, '明确失败要说没切')
+  assert.equal(panel(tree).includes('没有收到切换回执'), false, '明确失败不是结果未知')
+  assert.equal(cards(tree)[1].props['aria-pressed'], 'true', '明确失败档位不变')
+  assert.equal(harness.dispatched.filter((type) => type === 'bkl:state-changed').length, 1, '明确失败不广播（档位没变），计数应停在场景一')
+
+  // 场景三：超时且读回也失败 —— 只说没核对上，不许声称显示的就是实际档位。
+  harness.setTierReadFails(true)
+  harness.setPostTier(() => Promise.reject(Object.assign(new Error('slow'), { name: 'AbortError' })))
+  cards(tree)[0].props.onClick()
+  tree = harness.render()
+  confirm(tree).props.onClick()
+  await flushMicrotasks()
+  tree = harness.render()
+  assert.equal(panel(tree).includes('当前档位没能核对上'), true, '读回失败只说没核对上')
+  assert.equal(panel(tree).includes('切换失败，当前仍是原来那档'), false)
+  assert.equal(panel(tree).includes('显示的即当前实际档位'), false, '没核对上不许声称显示的是实际档位')
+  assert.equal(harness.dispatched.filter((type) => type === 'bkl:state-changed').length, 2, '读回失败同样是结果未知，也要广播')
+})
+
+test('B8 浮窗删除确认按条目身份锚定：确认期间列表变化不误删', async () => {
+  const harness = loadDockHarness({ hooks: { 5: true } })
+  const { exported } = harness
+  const a = { from: 'aaa', to: 'x1' }
+  const b = { from: 'bbb', to: 'x2' }
+  const c = { from: 'ccc', to: 'x3' }
+  exported.aliasStore.state.phase = 'ready'
+  exported.aliasStore.state.entries = [a, b, c]
+  const delButtons = (tree) => findAll(tree, (n) => n.type === 'button' && n.props?.className === 'dock-alias-del')
+
+  let tree = harness.render()
+  assert.equal(delButtons(tree).length, 3)
+  delButtons(tree)[1].props.onClick() // 给 bbb 挂确认态
+  // 确认期间列表变了（aaa 被别处删掉）：bbb 从下标 1 挪到 0。
+  exported.aliasStore.state.entries = [b, c]
+  tree = harness.render()
+  const armed = delButtons(tree).filter((n) => n.props?.title !== undefined)
+  assert.equal(armed.length, 1, '只应有一个确认态按钮')
+  assert.equal(String(armed[0].props.title).includes('bbb'), true, '确认态必须挂在 bbb 行')
+  assert.equal(String(armed[0].props.title).includes('ccc'), false, '确认态不许漂到 ccc 行')
+  armed[0].props.onClick() // 确认删除
+  await flushMicrotasks()
+  const puts = harness.fetchLog.filter((call) => call.method === 'PUT')
+  assert.equal(puts.length, 1)
+  assert.deepEqual(JSON.parse(puts[0].body).entries.map((entry) => entry.from), ['ccc'], '删掉的应是 bbb，ccc 不许陪葬')
+})
+
+test('B8 归一化上限以下 limits 为准：后端调高上限后第 101 条起不被删掉', async () => {
+  const { exported } = loadClient()
+  const many = Array.from({ length: 120 }, (_, i) => ({ from: `f${i}`, to: `t${i}` }))
+  // limits 缺席才回落模块常量（100 条 / 64 字符）
+  assert.equal(exported.normalizeAliasEntries(many).length, 100)
+  assert.equal(exported.normalizeAliasEntries([{ from: 'x'.repeat(65), to: 'y' }]).length, 0)
+  // limits 为准
+  assert.equal(exported.normalizeAliasEntries(many, { maxEntries: 150, maxTerm: 64 }).length, 120, '120 条按 limits 全保留')
+  assert.equal(exported.normalizeAliasEntries([{ from: 'x'.repeat(80), to: 'y' }], { maxEntries: 150, maxTerm: 80 }).length, 1, '80 字符词条在 maxTerm=80 时合法')
+  // 读取与提交两个挂载点共用这一口径
+  let disk = many
+  const store = exported.createAliasStore({
+    get: async () => ({ ok: true, code: 'ok', message: '', data: { entries: disk, limits: { maxEntries: 150, maxTerm: 80 }, lastHits: 0 } }),
+    put: async (_path, body) => { disk = body.entries; return { ok: true, code: 'saved', data: { entries: disk } } },
+  })
+  await store.read()
+  assert.equal(store.state.entries.length, 120, '读取归一化不许按 100 条常量截断')
+  const saved = await store.commit({ type: 'save', originalFrom: null, entry: { from: 'new', to: 'one' } })
+  assert.equal(saved.ok, true)
+  assert.equal(store.state.entries.length, 121, '提交回来的整表同样不被常量截断')
+  // 预览与归一化同一口径：80 字符词条在 maxTerm=80 时参与替换
+  const long = 'x'.repeat(80)
+  assert.equal(exported.maskPreview(long, [{ from: long, to: 'Y' }], { maxEntries: 150, maxTerm: 80 }).text, 'Y')
+  assert.equal(exported.maskPreview(long, [{ from: long, to: 'Y' }]).text, long, 'limits 缺席仍按 64 字符常量丢弃')
+})
+
+test('B8 点列表切换规则过草稿守卫：不丢草稿、不误拉正文，确认后才切', async () => {
+  const { log, fetch } = deferredFetch()
+  const harness = loadSectionHarness(async () => {}, {
+    fetch,
+    status: {
+      rules: [
+        { id: 'r1', name: 'Rule One', target: 'AGENTS.md', bytes: 10 },
+        { id: 'r2', name: 'Rule Two', target: 'CLAUDE.md', bytes: 20 },
+      ],
+      activeRule: 'r1',
+    },
+    hooks: {
+      0: 'rules',
+      // ruleBody 已就位（id 与选中项一致）：规则正文按需加载的 effect 不会再拉。
+      // 这也是「正在看 r1 且手上有脏草稿」的真实状态；顺带避开桩内 effect 在
+      // render 中途执行时踩到后置 const 的 TDZ（真 React 在 render 后才跑 effect）。
+      20: { id: 'r1', status: 'ok', text: 'body' },
+      18: { id: 'r1', name: '', target: 'AGENTS.md', text: 'new draft', isNew: false, baseline: { id: 'r1', name: '', target: 'AGENTS.md', text: 'old body' } },
+    },
+  })
+  const { exported } = harness
+  const reads = () => log.filter((call) => call.url.includes('/rules/read'))
+  const tree = harness.render()
+  const rulesNode = findAll(tree, (n) => n.type === exported.RulesBlock)[0]
+  const ruleList = rulesNode.type({ ...rulesNode.props, children: rulesNode.children })
+  const ruleButtons = findAll(ruleList, (n) => n.type === 'button' && String(n.props?.['aria-label'] ?? '').startsWith('查看规则'))
+  assert.equal(ruleButtons.length, 2)
+  ruleButtons[1].props.onClick() // 点 Rule Two——手上有脏草稿
+  assert.deepEqual(reads(), [], '守卫拦下后不许拉 r2 正文')
+  assert.equal(harness.hooks[18].value.text, 'new draft', '草稿不许被清掉')
+  assert.notEqual(harness.hooks[19].value, 'r2', '选中项不许偷偷切换')
+  const tree2 = harness.render()
+  const dialogNode = findAll(tree2, (n) => n.type === exported.Dialog && n.props?.open === true)[0]
+  assert.equal(Boolean(dialogNode), true, '应弹出放弃草稿确认')
+  assert.equal(dialogNode.props.title, '当前有未保存的规则草稿')
+  dialogNode.props.onAccept() // 确认放弃才真正切
+  await flushMicrotasks()
+  assert.equal(harness.hooks[12].value, null, '确认后弹窗关闭')
+  assert.equal(harness.hooks[18].value, null, '确认后才清草稿')
+  assert.equal(harness.hooks[19].value, 'r2', '确认后才切到 r2')
+  assert.deepEqual(reads().map((call) => call.url), ['/breaklimit/rules/read?id=r2'], '确认后才拉一次 r2 正文')
+})
+
+test('B8 浮窗读回存档即夹边：小视口下不会整体落在视口外', () => {
+  const stored = JSON.stringify({ version: 1, rect: { x: 5000, y: 5000, width: 380, height: 460 } })
+  const harness = loadDockHarness({
+    hooks: { 5: true },
+    viewport: { width: 800, height: 600 },
+    localStorage: { getItem: () => stored, setItem() {} },
+  })
+  const tree = harness.render()
+  const dialog = findAll(tree, (n) => n.props?.role === 'dialog')[0]
+  const rect = {
+    left: Number.parseFloat(dialog.props.style.left),
+    top: Number.parseFloat(dialog.props.style.top),
+    width: Number.parseFloat(dialog.props.style.width),
+    height: Number.parseFloat(dialog.props.style.height),
+  }
+  assert.equal(rect.left >= 0 && rect.left + rect.width <= 800, true, `浮窗横坐标越界：${dialog.props.style.left}`)
+  assert.equal(rect.top >= 0 && rect.top + rect.height <= 600, true, `浮窗纵坐标越界：${dialog.props.style.top}`)
+})
+
+test('B8 更新弹窗被迟到 render 重开：用户关掉后不再弹开', async () => {
+  const { log, fetch } = deferredFetch()
+  const harness = loadSectionHarness(async () => {}, {
+    fetch,
+    hooks: { 27: { hasUpdate: false, newer: false, autoCheckUpdates: true, checkedAt: 1 } },
+  })
+  const { exported } = harness
+  const openDialogs = (tree) => findAll(tree, (n) => n.type === exported.Dialog && n.props?.open === true)
+  const bodyText = (dialogNode) => textOf({ children: [dialogNode.props.body] })
+
+  let tree = harness.render()
+  findAll(tree, (n) => n.type === 'button' && n.props?.className === 'bkl-version')[0].props.onClick()
+  tree = harness.render()
+  assert.equal(openDialogs(tree).length, 1, '点版本徽章应打开更新弹窗')
+  // 点「检查更新」：请求在途
+  const checkButton = findAll({ children: [openDialogs(tree)[0].props.body] }, (n) => n.type === exported.Button && textOf(n) === '检查更新')[0]
+  checkButton.props.onClick()
+  tree = harness.render()
+  assert.equal(bodyText(openDialogs(tree)[0]).includes('正在检查'), true)
+  // 请求在途中用户关掉弹窗
+  findAll(tree, (n) => n.type === exported.Dialog && n.props?.idBase === 'bkl-dialog')[0].props.onClose()
+  tree = harness.render()
+  assert.equal(openDialogs(tree).length, 0, '关掉后不该有打开的弹窗')
+  // 迟到的检查结果落定：不许把弹窗重新打开
+  log.filter((call) => call.url.endsWith('/update/check'))[0].resolve(makeResponse({ hasUpdate: false, newer: false, checkedAt: 2, autoCheckUpdates: true }))
+  await flushMicrotasks()
+  tree = harness.render()
+  assert.equal(openDialogs(tree).length, 0, '迟到的 render 不许重开弹窗')
+  assert.equal(harness.hooks[12].value, null, '弹窗状态必须保持关闭')
+})
+
+test('B8 自动检查失败显示失败态，不显示『已是最新版本』', () => {
+  const openUpdateBody = (harness) => {
+    const tree = harness.render()
+    findAll(tree, (n) => n.type === 'button' && n.props?.className === 'bkl-version')[0].props.onClick()
+    const node = findAll(harness.render(), (n) => n.type === harness.exported.Dialog && n.props?.open === true)[0]
+    return {
+      text: textOf({ children: [node.props.body] }),
+      notices: findAll({ children: [node.props.body] }, (n) => n.type === harness.exported.Notice),
+    }
+  }
+  const view = (extra) => ({ hasUpdate: false, newer: false, autoCheckUpdates: true, checkedAt: 1700000000000, ...extra })
+  // 自动检查失败（连不上 GitHub）：如实报失败，不再说「已是最新版本」。
+  const failed = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'update_unreachable' }) } }))
+  assert.equal(failed.notices.some((n) => n.props?.title === '连不上 GitHub'), true, '应显示失败态')
+  assert.equal(failed.text.includes('已是最新版本'), false, '失败时不许说已是最新版本')
+  // locked 与 update_invalid 各有其文案。
+  const locked = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'locked' }) } }))
+  assert.equal(locked.notices.some((n) => n.props?.title === '更新状态被其它进程占用'), true)
+  const invalid = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'update_invalid' }) } }))
+  assert.equal(invalid.notices.some((n) => n.props?.title === '检查结果无法解析'), true)
+  // 对照：没有失败结论时仍是「已是最新版本」，断言本身有判别力。
+  const ok = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({}) } }))
+  assert.equal(ok.text.includes('已是最新版本'), true)
+  assert.equal(ok.notices.length, 0)
 })

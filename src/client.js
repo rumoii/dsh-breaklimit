@@ -1148,6 +1148,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockPopoverTitle: "破限快捷设置",
       dockModeTitle: "提示词模式",
       dockTierFailed: "切换失败，当前仍是原来那档。",
+      dockTierUnknown: "没有收到切换回执，结果未知；已重新读取核对，显示的即当前实际档位。",
+      dockTierUnknownOffline: "没有收到切换回执，结果未知；重新读取也失败了，当前档位没能核对上。",
       confirmOverwriteAlias: (from) => `词条「${String(from)}」已存在，确定覆盖吗？`,
       confirmDeleteAlias: (from) => `确定删除词条「${String(from)}」吗？`,
       aliasTitle: "目标词表",
@@ -1523,6 +1525,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       updateFailedHint: "检查更新会读取 HTTPS_PROXY 环境变量，或 git 的 http.proxy 配置。国内网络通常需要代理。",
       updateFailedInvalid: "检查结果无法解析",
       updateFailedInvalidHint: "GitHub 有响应但内容不对，通常是临时故障；稍后再试。",
+      updateFailedLocked: "更新状态被其它进程占用",
+      updateFailedLockedHint: "另一个检查正在写更新状态，这次自动检查没有执行。稍后点「检查更新」补查一次即可。",
       updateDismiss: "忽略此版本",
       updateDismissed: (v) => `已忽略 ${String(v)}，手动检查仍会显示`,
       updateLastChecked: (t) => `上次检查：${String(t)}`,
@@ -1942,6 +1946,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockPopoverTitle: "Quick Breaklimit Settings",
       dockModeTitle: "Prompt Mode",
       dockTierFailed: "Switch failed; the mode is unchanged.",
+      dockTierUnknown: "No switch confirmation arrived; the result is unknown. The mode was re-read; what is shown is the actual current mode.",
+      dockTierUnknownOffline: "No switch confirmation arrived; the result is unknown. The re-read failed too, so the current mode could not be confirmed.",
       confirmOverwriteAlias: (from) => `Entry "${String(from)}" already exists. Overwrite?`,
       confirmDeleteAlias: (from) => `Delete entry "${String(from)}"?`,
       aliasTitle: "Target words",
@@ -2318,6 +2324,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       updateFailedHint: "The check reads the HTTPS_PROXY environment variable or git's http.proxy setting. Networks that block GitHub usually need a proxy.",
       updateFailedInvalid: "Cannot parse the check result",
       updateFailedInvalidHint: "GitHub responded but the content was unusable, usually temporary. Try again later.",
+      updateFailedLocked: "The update state is held by another process",
+      updateFailedLockedHint: "Another check is writing the update state, so this automatic check did not run. Press Check for updates later to catch up.",
       updateDismiss: "Ignore this version",
       updateDismissed: (v) => `${String(v)} is ignored; manual checks still show it`,
       updateLastChecked: (t) => `Last checked ${String(t)}`,
@@ -2562,24 +2570,28 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   // 提交，执行时基于最新列表算出整表再写；写入串行，过期响应作废。
 
   /** 一条映射是否可用。空白、超长、自映射都算不可用。与 host/masks.js 的 validEntry 同口径。 */
-  function aliasEntryValid(entry) {
+  function aliasEntryValid(entry, limits) {
     if (entry === null || typeof entry !== "object") return false
     const { from, to } = entry
     if (typeof from !== "string" || typeof to !== "string") return false
     const source = from.trim()
     const target = to.trim()
     if (source === "" || target === "") return false
-    if (source.length > WORD_TERM_MAX || target.length > WORD_TERM_MAX) return false
+    const maxTerm = Number.isFinite(limits?.maxTerm) ? limits.maxTerm : WORD_TERM_MAX
+    if (source.length > maxTerm || target.length > maxTerm) return false
     if (source === target) return false
     return true
   }
 
   /** 去空白、丢无效项、按 from 去重（后者覆盖前者）。与 host/masks.js 的 normalizeEntries 同口径。 */
-  function normalizeAliasEntries(entries) {
+  function normalizeAliasEntries(entries, limits) {
+    // 上限以下 limits 为准（GET /alias 带回的后端值），缺席时才回落模块常量：硬编码
+    // 会让后端调高上限后第 101 条起在归一化里被永久删掉。预览与两个挂载点共用这一口径。
+    const maxEntries = Number.isFinite(limits?.maxEntries) ? limits.maxEntries : WORDS_MAX
     const out = []
     const seen = new Map()
     for (const entry of Array.isArray(entries) ? entries : []) {
-      if (!aliasEntryValid(entry)) continue
+      if (!aliasEntryValid(entry, limits)) continue
       const item = { from: entry.from.trim(), to: entry.to.trim() }
       const at = seen.get(item.from)
       if (at === undefined) {
@@ -2589,7 +2601,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         out[at] = item
       }
     }
-    return out.slice(0, WORDS_MAX)
+    return out.slice(0, maxEntries)
   }
 
   /**
@@ -2597,9 +2609,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
    * 长词优先、按顺序依次替换，后面的词条可能继续匹配前面替换产生的文本。
    * 不是「模拟真实命中」，只是给用户看保存后的替换效果。
    */
-  function maskPreview(text, entries) {
+  function maskPreview(text, entries, limits) {
     if (typeof text !== "string" || text === "") return { text, hits: 0, matched: [] }
-    const list = normalizeAliasEntries(entries)
+    const list = normalizeAliasEntries(entries, limits)
     if (list.length === 0) return { text, hits: 0, matched: [] }
     const ordered = [...list].sort((a, b) => b.from.length - a.from.length)
     let out = text
@@ -2667,7 +2679,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   function readDockLayout() {
     try {
       if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") return { version: 1, rect: null }
-      return parseDockLayout(JSON.parse(localStorage.getItem(DOCK_LAYOUT_KEY) ?? "null"))
+      // 读回即夹边：存档可能来自另一台机器或更大的屏幕，不夹的话小窗口下浮窗整体落在
+      // 视口外，而夹边此前只在 resize/拖动时发生，用户没有任何路径把它拉回来。
+      const layout = parseDockLayout(JSON.parse(localStorage.getItem(DOCK_LAYOUT_KEY) ?? "null"))
+      return { version: 1, rect: layout.rect === null ? null : clampDockRect(layout.rect, viewportSize()) }
     } catch {
       return { version: 1, rect: null }
     }
@@ -2785,12 +2800,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           return
         }
         // 落定时过一遍归一：后端返回脏条目（非字符串字段）时，渲染层不该因此白屏。
-        // 与 host/masks.js 同口径，幂等。
-        state.entries = normalizeAliasEntries(data.entries)
-        state.limits = {
+        // 与 host/masks.js 同口径，幂等；上限按后端 limits 归一，见 normalizeAliasEntries。
+        const limits = {
           maxEntries: Number.isFinite(data.limits?.maxEntries) ? data.limits.maxEntries : WORDS_MAX,
           maxTerm: Number.isFinite(data.limits?.maxTerm) ? data.limits.maxTerm : WORD_TERM_MAX,
         }
+        state.entries = normalizeAliasEntries(data.entries, limits)
+        state.limits = limits
         state.lastHits = Number(data.lastHits) || 0
         state.phase = "ready"
         state.stale = false
@@ -2816,7 +2832,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         try {
           const payload = await requests.put("/alias", { entries: next })
           const data = payload?.data ?? {}
-          state.entries = normalizeAliasEntries(Array.isArray(data.entries) ? data.entries : next)
+          state.entries = normalizeAliasEntries(Array.isArray(data.entries) ? data.entries : next, state.limits)
           state.phase = "ready"
           state.stale = false
           state.saving = false
@@ -4919,7 +4935,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const rows = entries
       .map((entry, index) => ({ entry, index }))
       .filter((item) => needle === "" || item.entry.from.toLowerCase().includes(needle) || item.entry.to.toLowerCase().includes(needle))
-    const preview = locked ? null : maskPreview(previewText, entries)
+    const preview = locked ? null : maskPreview(previewText, entries, limits)
     const previewSummary = locked
       ? T.wordsPreviewPaused
       : entries.length === 0 ? T.wordsPreviewEmptyList
@@ -5205,6 +5221,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     // 正文草稿的影子副本：保存完成后要判断「保存期间是不是又输入了」，
     // 而那时闭包里的 draft 是旧值，只能信实时副本。
     const draftRef = useRef(null)
+    // load() 的请求序号与最后落定序号：旧响应作废，见 load()。桩按 hook 调用序号
+    // 注入既有状态，新 hook 一律追加在末尾，插在中间会让后面每一个的序号都错位。
+    const loadSeqRef = useRef(0)
+    const loadAppliedRef = useRef(0)
+    // 弹窗代号：openDialog/closeDialog 都会递增；更新弹窗迟到的 render 只认自己这一代。
+    const dialogEpochRef = useRef(0)
     const setPromptDraft = useCallback((value) => {
       draftRef.current = typeof value === "function" ? value(draftRef.current) : value
       setDraft(draftRef.current)
@@ -5297,10 +5319,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }, [])
 
     const load = useCallback(async () => {
+      loadSeqRef.current += 1
+      const mine = loadSeqRef.current
       const [statusResult, patchResult, overrideResult, tierResult] = await Promise.allSettled([
         get("/status"), get("/patches"), get("/override"), get("/tier"),
       ])
-      if (!mounted.current) return
+      // 过期响应作废：这期间已有更新的 load() 落定，先发后到的旧响应不许覆盖新数据
+      // （同 createAliasStore 读取的 version 守卫）。
+      if (!mounted.current || mine <= loadAppliedRef.current) return
+      loadAppliedRef.current = mine
       if (statusResult.status === "fulfilled") {
         setStatus(statusResult.value.data ?? null)
         setLoadError(null)
@@ -5417,8 +5444,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     // 所有确认（应用、回退、切档、覆盖、删除、恢复）共用一个弹窗：确认才执行，
     // Esc / 取消 / 点遮罩都原样退出，不留下半截状态。
-    const openDialog = useCallback((spec) => { setDialog(spec) }, [])
-    const closeDialog = useCallback(() => { setDialog(null) }, [])
+    // 每次开/关弹窗都换代：迟到的回调不再把更新弹窗重新打开（见 openUpdate）。
+    const openDialog = useCallback((spec) => { dialogEpochRef.current += 1; setDialog(spec) }, [])
+    const closeDialog = useCallback(() => { dialogEpochRef.current += 1; setDialog(null) }, [])
 
     // 使用说明弹窗：三步 + 生效时机一句。不传 yes；只读说明没有可放弃的操作，
     // 底部按钮文案用「关闭」而不是「取消」。
@@ -5438,16 +5466,23 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }, [openDialog])
 
     /**
-     * 版本与更新弹窗。每次状态变化都重新 openDialog 一份新 spec——Dialog 的 open 不变，
+     * 版本与更新弹窗。每次状态变化都重新 setDialog 一份新 spec——Dialog 的 open 不变，
      * 只换内容，不会重复 showModal，也不会把焦点甩出去。
      */
     const openUpdate = useCallback(() => {
+      // 领一个弹窗代号：迟到的 render 只在「这一代还开着」时换内容，见 render()。
+      dialogEpochRef.current += 1
+      const epoch = dialogEpochRef.current
       let view = updateInfo
       let checking = false
       let error = ""
 
       const render = () => {
+        // 用户关掉、别的弹窗顶上来、设置卸载之后，迟到的 render 不再改弹窗也不再 setState。
+        if (!mounted.current || dialogEpochRef.current !== epoch) return
         const checkedAt = typeof view?.checkedAt === "number" ? view.checkedAt : 0
+        // 自动检查的失败结论（update_unreachable / update_invalid / locked）随视图回来。
+        const autoError = typeof view?.lastError === "string" && view.lastError !== "" ? view.lastError : ""
         const autoOn = view?.autoCheckUpdates !== false
         const rows = [
           h("p", { style: S.text },
@@ -5476,6 +5511,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             h(Button, { size: "small", onClick: () => { void dismiss(view.latestVersion) } }, T.updateDismiss)))
         } else if (view?.newer === true) {
           rows.push(h("p", { style: S.small }, T.updateDismissed(view.latestVersion)))
+        } else if (autoError !== "") {
+          // 自动检查失败要如实说：checkedAt 停在旧值不代表「已是最新版本」。
+          const locked = autoError === "locked"
+          const invalid = autoError === "update_invalid"
+          rows.push(h(Notice, { tone: "warn", title: locked ? T.updateFailedLocked : invalid ? T.updateFailedInvalid : T.updateFailed, body: locked ? T.updateFailedLockedHint : invalid ? T.updateFailedInvalidHint : T.updateFailedHint }))
         } else if (checkedAt > 0) {
           rows.push(h("p", { style: S.small }, T.updateLatest))
         }
@@ -5489,7 +5529,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           h("span", { style: S.text }, T.updateAutoCheck)))
         rows.push(h("p", { style: S.small }, T.updateAutoCheckHint))
 
-        openDialog({
+        setDialog({
           title: T.updateDialogTitle,
           tone: "accent",
           cancelText: T.dismissShort,
@@ -5499,8 +5539,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
       const adopt = (data) => {
         if (data === null || data === undefined) return
-        view = data
-        setUpdateInfo(data)
+        // 切开关、忽略版本的响应不带 lastError 键：合并而不是整体替换，自动检查的
+        // 失败结论不能被一次无关操作悄悄抹掉。
+        view = { ...view, ...data }
+        if (mounted.current) setUpdateInfo(view)
       }
 
       const checkNow = async () => {
@@ -5508,7 +5550,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         error = ""
         render()
         try {
-          adopt((await post("/update/check", {})).data)
+          const data = (await post("/update/check", {})).data
+          // 手动检查成功就盖掉自动检查的失败结论：此刻的检查结果是新的。
+          adopt(data === null || data === undefined ? data : { ...data, lastError: null })
         } catch (failure) {
           error = String(failure?.code ?? "update_unreachable")
         } finally {
@@ -5904,10 +5948,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }
 
     const openRule = (id) => {
-      setSelectedRuleId(id)
-      setRuleEdit(null)
-      clearNotice("rules")
-      loadRuleBody(id)
+      // 点列表切换规则同样会丢掉正在编辑的草稿：过同一守卫，确认后才切。
+      guardDirtyRule(() => {
+        setSelectedRuleId(id)
+        setRuleEdit(null)
+        clearNotice("rules")
+        loadRuleBody(id)
+      })
     }
 
     // ---- 词库 ----
@@ -6590,14 +6637,14 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [, bumpDock] = useState(0)
     const [tier, setTier] = useState("recommended")
     const [tierBusy, setTierBusy] = useState(false)
-    const [tierFailed, setTierFailed] = useState(false)
+    const [tierState, setTierState] = useState(null)
     const [pendingTier, setPendingTier] = useState(null)
     const [open, setOpen] = useState(false)
     const [dockUpdate, setDockUpdate] = useState(null)
     const [fromInput, setFromInput] = useState("")
     const [toInput, setToInput] = useState("")
     const [confirmFrom, setConfirmFrom] = useState(null)
-    const [deletingIndex, setDeletingIndex] = useState(null)
+    const [deletingFrom, setDeletingFrom] = useState(null)
     const [writeState, setWriteState] = useState(null)
     const [navHint, setNavHint] = useState(false)
     // 浮窗的位置和尺寸存本地：关掉再打开回到原处，不用每次重新摆。
@@ -6626,7 +6673,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const switchTier = async (next) => {
       if (next === tier || tierBusy) return
       setTierBusy(true)
-      setTierFailed(false)
+      setTierState(null)
       try {
         const payload = await post("/tier", { tier: next })
         if (!aliveRef.current) return
@@ -6636,9 +6683,30 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
           window.dispatchEvent(new CustomEvent(STATE_CHANGED_EVENT))
         }
-      } catch {
-        // 不做静默：档位没变，按钮还停在原来那档，用户得知道为什么点了没反应。
-        if (aliveRef.current) setTierFailed(true)
+      } catch (error) {
+        if (!aliveRef.current) return
+        const code = String(error?.code ?? "")
+        if (code !== "timeout" && code !== "network") {
+          // 明确失败才说没切：档位没变，按钮还停在原来那档，用户得知道为什么点了没反应。
+          setTierState("failed")
+          return
+        }
+        // 超时/断网不等于没切：POST 可能已经写入。不宣布未生效，重新读取核对，
+        // 显示的档位以读回为准（同 saveWordChange 的 unknown 处理）。
+        setTierState("unknown")
+        const tierRes = await get("/tier").catch(() => null)
+        if (!aliveRef.current) return
+        if (typeof tierRes?.data?.tier === "string") {
+          setTier(tierRes.data.tier)
+        } else {
+          // 连读回都没成：档位依然未知，只说「没核对上」，不许声称显示的就是实际档位。
+          setTierState("unknownOffline")
+        }
+        // 结果未知时档位可能已经变了：同样广播，让设置区重拉——两个挂载点不能
+        // 对同一档位给出不同说法。明确失败（上面提前 return）才不广播。
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+          window.dispatchEvent(new CustomEvent(STATE_CHANGED_EVENT))
+        }
       } finally {
         if (aliveRef.current) setTierBusy(false)
       }
@@ -6701,7 +6769,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       const close = () => {
         setOpen(false)
         setConfirmFrom(null)
-        setDeletingIndex(null)
+        setDeletingFrom(null)
         setPendingTier(null)
       }
       // 浮窗是 fixed，可能压在页面任何位置：判断「点了外面」要看它自己和触发按钮。
@@ -6828,11 +6896,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const removeAt = (index) => {
       const entry = entries[index]
       if (entry === undefined) return
-      if (deletingIndex !== index) {
-        setDeletingIndex(index)
+      // 确认按条目身份（原词）锚定，不按下标：确认期间列表变了，也不会删到别的条目。
+      if (deletingFrom !== entry.from) {
+        setDeletingFrom(entry.from)
         return
       }
-      setDeletingIndex(null)
+      setDeletingFrom(null)
       void commitChange({ type: "delete", from: entry.from })
     }
 
@@ -6967,7 +7036,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("button", { type: "button", style: ALIAS.confirmBtn, "aria-label": T.cancel, onClick: () => { setPendingTier(null) } }, T.cancel))
               : null,
             pendingTier !== null ? h("p", { style: ALIAS.foot }, T.confirmModeBody) : null,
-            tierFailed ? h("p", { style: ALIAS.fail }, T.dockTierFailed) : null),
+            tierState === "failed" ? h("p", { style: ALIAS.fail }, T.dockTierFailed)
+              : tierState === "unknown" ? h("p", { style: ALIAS.fail }, T.dockTierUnknown)
+                : tierState === "unknownOffline" ? h("p", { style: ALIAS.fail }, T.dockTierUnknownOffline)
+                  : null),
 
             // 第二节：目标词表轻量管理
             h("div", { className: "dock-section", style: ALIAS.section },
@@ -6993,10 +7065,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("button", {
                     type: "button",
                     className: "dock-alias-del",
-                    style: deletingIndex === index ? merge(ALIAS.remove, { color: tk.error, fontWeight: 600 }) : ALIAS.remove,
-                    title: deletingIndex === index ? T.confirmDeleteAlias(entry.from) : undefined,
+                    style: deletingFrom === entry.from ? merge(ALIAS.remove, { color: tk.error, fontWeight: 600 }) : ALIAS.remove,
+                    title: deletingFrom === entry.from ? T.confirmDeleteAlias(entry.from) : undefined,
                     onClick: () => { removeAt(index) },
-                  }, deletingIndex === index ? T.aliasConfirmDelete : T.aliasRemove)))),
+                  }, deletingFrom === entry.from ? T.aliasConfirmDelete : T.aliasRemove)))),
             entries.length > 3
               ? h("p", { style: ALIAS.foot }, T.dockAliasLimitHint(entries.length))
               : null,
