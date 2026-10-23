@@ -2669,6 +2669,36 @@ test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', ()
   )
 })
 
+test('P2 概览：三步引导默认折叠，展开只留在本次挂载', () => {
+  // guideOpen 是 Section 状态列表的第 17 项（0 基索引 17，draft=16 之后）。
+  // 宿主每次打开设置、每次切回概览都会重挂载 Section（SettingsRoot 的
+  // `{open && …}` 与 renderSlot 的 only: active），所以这个初始值就是默认态。
+  // 往 Section 前面插 hook 会让序号错位，改状态列表时一并改这里。
+  const harness = loadSectionHarness(async () => {})
+  const sectionTree = harness.render()
+  assert.equal(harness.hooks[17].value, false, '概览页三步引导应默认折叠')
+  const page = findAll(sectionTree, n => typeof n.type === 'function' && typeof n.props?.onToggleGuide === 'function')[0]
+  assert.equal(Boolean(page), true, '应从 Section 树取到概览页')
+  assert.equal(page.props.guideOpen, false, 'Section 应把折叠态传给概览页')
+
+  const collapsed = mount(page)
+  assert.equal(findAll(collapsed, n => n.props?.className === 'bkl-guide').length, 0, '折叠态不渲染引导卡')
+  const showLink = findAll(collapsed, n => n.type === 'button' && textOf(n).includes('展开步骤'))[0]
+  assert.equal(Boolean(showLink), true, '折叠态应留一个展开链接')
+
+  showLink.props.onClick({ preventDefault() {} })
+  assert.equal(harness.hooks[17].value, true, '点击展开应把状态置为 true')
+  const reopened = findAll(harness.render(), n => typeof n.type === 'function' && typeof n.props?.onToggleGuide === 'function')[0]
+  assert.equal(reopened.props.guideOpen, true, '翻转后 Section 应把展开态传给概览页')
+  const guide = findAll(mount(reopened), n => n.props?.className === 'bkl-guide')[0]
+  assert.equal(Boolean(guide), true, '展开后应渲染引导卡')
+  const hideLink = findAll(guide, n => n.type === 'button' && textOf(n).includes('收起步骤'))[0]
+  assert.equal(Boolean(hideLink), true, '展开态应留收起链接')
+
+  hideLink.props.onClick({ preventDefault() {} })
+  assert.equal(harness.hooks[17].value, false, '收起应回到折叠')
+})
+
 test('P2 壳层：帮助 Dialog 标题与三步骤文案来自 TEXT', () => {
   const harness = loadSectionHarness(async () => {})
   const { exported } = harness

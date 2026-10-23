@@ -5213,7 +5213,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [notices, setNotices] = useState({})
     const [restart, setRestart] = useState(null)
     const [draft, setDraft] = useState(null)
-    const [guideOpen, setGuideOpen] = useState(true)
+    // 三步引导默认收起：首次配置时需要，之后每次进概览都占掉一屏左栏。
+    // 折叠态仍留「展开步骤」链接，展开只影响本次挂载（宿主切页签会重挂载）。
+    const [guideOpen, setGuideOpen] = useState(false)
     const [ruleEdit, setRuleEditState] = useState(null)
     const [selectedRuleId, setSelectedRuleId] = useState(null)
     const [ruleBody, setRuleBody] = useState({ id: null, status: "idle", text: "" })
