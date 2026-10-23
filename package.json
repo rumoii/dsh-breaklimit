@@ -1,6 +1,6 @@
 {
   "name": "rumo-dsh-breaklimit",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "DeepSeek Harness 破限插件：严格补丁引擎（预哈希、命中数守卫、事务回滚）加上宿主自身的运行时接缝，两者职责不重叠。",
   "type": "module",
   "main": "./src/plugin.js",

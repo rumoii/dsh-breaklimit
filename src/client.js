@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   const SECTION_ID = "breaklimit"
   const SECTION_ORDER = 45
   // 与 package.json 同步，发版时两处一起改。不运行时读 package.json。
-  const PLUGIN_VERSION = "0.9.4"
+  const PLUGIN_VERSION = "0.9.5"
   const API = "/breaklimit"
   const REQUEST_TIMEOUT_MS = 20000
   const NOTICE_OK_MS = 5000
