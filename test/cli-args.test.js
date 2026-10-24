@@ -99,3 +99,12 @@ test('--help 不受参数兜底影响，仍退出 0', () => {
   assert.equal(result.code, 0)
   assert.match(result.stdout, /--status/)
 })
+
+
+test('--host-root 缺值不能吞掉动作，规则损坏不能报告空目录', () => {
+  const home = tempDir('bkl-cli-bounded-')
+  assert.equal(capture(['--host-root', '--status'], envFor(home)).code, 2)
+  fs.mkdirSync(path.join(home, 'breaklimit'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'breaklimit', 'rules.json'), '{broken')
+  assert.equal(capture(['--rules'], envFor(home)).code, 1)
+})

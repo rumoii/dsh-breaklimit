@@ -2,9 +2,9 @@
 import { readInject } from '../context/inject-file.js'
 import { readMasks, maskText } from './masks.js'
 import { resolveHome } from '../patch/state.js'
-import { promptMode, readModeExtension, readTail } from '../context/prompt.js'
+import { readMode, readModeExtension, readTail } from '../context/prompt.js'
 import * as rules from '../context/rules.js'
-import * as tiers from '../context/tiers.js'
+import { buildTierPrompt } from '../context/tiers.js'
 
 const FULL_ACCESS = 'danger-full-access'
 const ESCALATION_REASON_PREFIX = 'escalate sandbox to '
@@ -94,7 +94,10 @@ function hardenStepMessages(decision, counters) {
  */
 function maskStepMessages(decision, runtime) {
   if (decision?.kind !== 'enter' || !Array.isArray(decision.messages)) return decision
-  const { entries } = readMasks(resolveHome())
+  const masks = readMasks(resolveHome(), runtime)
+  runtime.maskRead = { error: masks.error, source: masks.source ?? 'disk' }
+  if (masks.unavailable) return { kind: 'reject' }
+  const { entries } = masks
   if (entries.length === 0) return decision
   let touched = false
   let hits = 0
@@ -239,9 +242,14 @@ export function registerSeams(ctx, config, runtime, order) {
     if (!runtime.enabled) return ''
     const home = resolveHome()
     const loaded = readInject(config)
-    const base = loaded.ok ? loaded.text : ''
-    const mode = promptMode(tiers.readTier(home).tier)
-    const tieredBase = tiers.buildTierPrompt(mode, base, readModeExtension(mode))
+    if (!loaded.ok) {
+      runtime.configError = loaded.code
+      throw new Error(`提示词正文不可用：${loaded.code}`)
+    }
+    const base = loaded.text
+    const mode = readMode(home, runtime)
+    runtime.configError = null
+    const tieredBase = buildTierPrompt(mode, base, readModeExtension(mode))
     // 激活中的规则是第二条注入通道。它同时写进了 $DSH_HOME 的落点文件，供宿主
     // 当作用户全局指令加载；这里再注入一次，是因为工作区指令有字节预算、会被
     // 截断，而直接注入系统提示是无条件的。两条通道互补，不是重复。
@@ -314,10 +322,13 @@ export function registerSeams(ctx, config, runtime, order) {
   // 只信文本：这条消息的正文就是 renderPrompt 的结果，不含注入文本就是没进提示词。
   // 观测的是最近一次装配，所以拿到 holder 之后只认它那条会话；拿不到时不挑会话。
   ctx.on('session/event', (session, event) => {
-    const last = runtime.lastAssembly
+    const last = runtime.assemblies?.get(session) ?? runtime.lastAssembly
+    if (last?.session !== undefined && last.session !== session) return
     if (last === undefined || last.injected !== true || !Array.isArray(last.markers) || last.markers.length === 0) return
-    const own = sessionOf(runtime.holder)
-    if (own !== undefined && session !== own) return
+    if (last.session === undefined) {
+      const own = sessionOf(runtime.holder)
+      if (own !== undefined && session !== own) return
+    }
     const text = systemMessageText(event)
     if (text === null) return
     last.injectionDropped = last.markers.some(marker => text.includes(marker)) ? false : true
@@ -351,17 +362,21 @@ export function registerSeams(ctx, config, runtime, order) {
     const tailText = typeof tail?.text === 'string' ? tail.text : ''
     const markers = [injectionMarker(text), injectionMarker(tailText)].filter(marker => marker !== null)
     const injected = text !== '' || tailText !== ''
-    const previous = runtime.lastAssembly
+    const session = sessionOf(context)
+    runtime.assemblies ??= new WeakMap()
+    const previous = session ? runtime.assemblies.get(session) : runtime.lastAssembly
     const carried = previous !== undefined
       && previous.injected === injected
       && sameMarkers(previous.markers, markers)
     runtime.lastAssembly = {
+      session,
       sections: sections.map(section => String(section?.name ?? '')),
       injected,
       markers,
       injectionDropped: carried ? previous.injectionDropped : 'unknown',
     }
 
+    if (session) runtime.assemblies.set(session, runtime.lastAssembly)
     return { ...resolved, sections }
   }, { prepend: true })
 

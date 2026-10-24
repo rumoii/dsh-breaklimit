@@ -5,14 +5,14 @@ import process from 'node:process'
 import { describePatches } from '../patch/index.js'
 import { knownPatchIds, readDisabled, setPatchEnabled } from '../patch/patch-selection.js'
 import { resolveHome } from '../patch/state.js'
-import { sizeOf } from '../patch/fsx.js'
+import { atomicWrite, sizeOf } from '../patch/fsx.js'
 import { revertPatches } from '../patch/transaction.js'
 import { applySelectedPatches } from '../patch/service.js'
 import { userInjectPath, maxInjectBytes, readInject } from '../context/inject-file.js'
 import { resolveHostRoot } from '../host/host-root.js'
 import { buildStatus, savedMessage } from '../host/status.js'
 import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
-import { applyModeBudget, resolveBudgets } from '../host/capabilities.js'
+import { switchTier, resolveBudgets } from '../host/capabilities.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { readMasks, writeMasks, masksPath, MAX_MASKS, MAX_MASK_TERM } from '../host/masks.js'
@@ -183,7 +183,7 @@ function parseJsonBody(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return {}
   try {
     const parsed = JSON.parse(raw)
-    return parsed === null || typeof parsed !== 'object' ? {} : parsed
+    return parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) ? null : parsed
   } catch {
     return null
   }
@@ -192,15 +192,20 @@ function parseJsonBody(raw) {
 // 引擎结果到 HTTP 状态的映射。冲突与内部失败的区分不是措辞问题：前者是调用方
 // 可以修正的处境（并发、漂移），后者是本方自己的问题（写不进磁盘、记录损坏），
 // 把它们都压成 400 会让真正的故障看起来像用户的输入错误。
-const CONFLICT_CODES = new Set(['operation_in_progress', 'drift_detected'])
-const INTERNAL_CODES = new Set(['apply_failed', 'revert_failed', 'state_corrupt', 'state_version_mismatch'])
+const CONFLICT_CODES = new Set(['operation_in_progress', 'drift_detected', 'recovery_required'])
+const INTERNAL_CODES = new Set(['apply_failed', 'revert_failed', 'state_corrupt', 'state_version_mismatch', 'io_failed'])
+
+function redactDetails(value) {
+  if (typeof value === 'string') return redactPathsInText(value)
+  if (Array.isArray(value)) return value.map(redactDetails)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDetails(item)]))
+  return value
+}
 
 function fromOperation(result) {
   // 失败结果的 message / error 里会带 errno 文案的绝对路径，出网前统一脱敏。
   // 状态码与 code 不动：调用方靠它们分流，不靠文案。
-  const view = { ...result }
-  if (typeof view.message === 'string') view.message = redactPathsInText(view.message)
-  if (typeof view.error === 'string') view.error = redactPathsInText(view.error)
+  const view = redactDetails(result)
   if (result.ok === true) return envelope(200, result.code, view.message, view)
   if (CONFLICT_CODES.has(result.code)) return envelope(409, result.code, view.message, view)
   if (INTERNAL_CODES.has(result.code)) return envelope(500, result.code, view.message, view)
@@ -339,8 +344,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
   const currentTierInfo = () => {
     const injected = readInject(config)
     const base = injected.ok ? injected.text : ''
-    const mode = promptMode(tiers.readTier(home()).tier)
-    return tiers.resolveTierInfo(home(), base, readModeExtension(mode))
+    const mode = promptMode(tiers.readTier(home(), runtime).tier)
+    return tiers.resolveTierInfo(home(), base, readModeExtension(mode), runtime)
   }
 
   return {
@@ -383,6 +388,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       return envelope(200, 'ok', '', {
         ...status,
         hostRoot: redactPath(status.hostRoot),
+        stateProblem: redactDetails(status.stateProblem),
+        budgetApply: redactDetails(status.budgetApply),
         inject: {
           ...status.inject,
           file: redactPath(status.inject.file),
@@ -404,7 +411,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'GET /patches': () => {
       const selection = readDisabled(home())
       return envelope(200, 'ok', '', {
-        ...describePatches(selection.disabled, readMode(home())),
+        ...describePatches(selection.disabled, readMode(home(), runtime)),
         selectionKind: selection.kind,
       })
     },
@@ -441,7 +448,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /apply': async () => {
       const { root, error } = requireHostRoot()
       if (error !== undefined) return error
-      return fromOperation(applySelectedPatches({ root, home: home(), mode: readMode(home()) }))
+      return fromOperation(applySelectedPatches({ root, home: home(), mode: readMode(home(), runtime) }))
     },
 
     'POST /revert': () => {
@@ -456,7 +463,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       return envelope(200, 'ok', '', {
         file: redactPath(file),
         bytes: sizeOf(file),
-        userFileExists: sizeOf(file) > 0,
+        userFileExists: fs.existsSync(file),
         effective: {
           ok: loaded.ok,
           code: loaded.code,
@@ -479,8 +486,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       }
       const file = userInjectPath(config)
       try {
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.writeFileSync(file, parsed.text, 'utf8')
+        atomicWrite(file, parsed.text)
       } catch (error) {
         logInternal('write_failed', error)
         return envelope(500, 'write_failed', WRITE_FAILED_MESSAGE)
@@ -491,7 +497,9 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'GET /tier': () => {
       const info = currentTierInfo()
       return envelope(200, 'ok', '', {
-        tier: info.tier,
+        tier: info.source === 'unavailable' ? null : info.tier,
+        source: info.source ?? 'disk',
+        error: info.error ?? null,
         available: info.available,
         bytes: info.bytes,
       })
@@ -505,10 +513,11 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         return envelope(400, 'invalid_tier', `非法档位。必须为：${tiers.TIERS.join(', ')}。`)
       }
       try {
-        tiers.writeTier(home(), parsed.tier)
-        await applyModeBudget(ctx, readMode(home()), resolveBudgets(config))
+        const submission = await switchTier(ctx, home(), parsed.tier, resolveBudgets(config))
         const info = currentTierInfo()
-        return envelope(200, 'saved', `提示词档位已切换为 ${parsed.tier}。`, {
+        return envelope(200, submission.verified ? 'saved' : 'tier_saved_budget_unconfirmed', submission.verified ? `提示词档位已切换为 ${parsed.tier}。` : '档位已保存，预算生效未确认。', {
+          budget: redactDetails(submission.budget),
+          budgetVerified: submission.verified,
           tier: info.tier,
           available: info.available,
           bytes: info.bytes,
@@ -591,7 +600,8 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'POST /rules/activate': async (req) => {
       const parsed = parseJsonBody(await readBody(req, bodyLimit))
       if (parsed === null) return envelope(400, 'invalid_json', '请求体不是合法 JSON。')
-      if (typeof parsed.id !== 'string' || parsed.id === '') {
+      if (parsed.id !== undefined && typeof parsed.id !== 'string') return envelope(400, 'invalid_id', 'id 必须是字符串。')
+      if (parsed.id === undefined || parsed.id === '') {
         const cleared = rules.deactivateRule(home())
         if (!cleared.ok) {
           if (cleared.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(cleared.reason))
@@ -677,7 +687,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         if (done.code === 'index_corrupt') return envelope(409, 'index_corrupt', redactPathsInText(done.reason))
         return envelope(rulesFailureStatus(done.code), 'rule_invalid', redactPathsInText(done.reason))
       }
-      return envelope(200, 'reset', `已清空规则，移除 ${String(done.removed)} 个文件。`, done)
+      return envelope(200, 'reset', `已清空规则，移除 ${String(done.removed)} 个文件。`, { ...done, skipped: redactSettlement(done).skipped })
     },
 
     'POST /rules/recover-corrupt': () => {
@@ -822,6 +832,10 @@ export function createHandler(ctx, config, runtime) {
     } catch (error) {
       if (error?.code === TOO_LARGE) {
         sendJson(res, 413, { ok: false, code: TOO_LARGE, message: String(error.message) })
+        return
+      }
+      if (error?.code === 'tier_config_unavailable') {
+        sendJson(res, 409, { ok: false, code: error.code, message: error.message })
         return
       }
       // 原始 message 会带出 $DSH_HOME 之类的绝对路径，只留在宿主日志里。

@@ -1025,7 +1025,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       donePromptSaved: (s) => `已保存（${String(s)}）`,
       donePromptReset: "已恢复内置正文",
       injectBad: (c) => (c === "inject_too_large" ? "正文文件超过大小上限，宿主现在拿到的是空正文。" : c === "inject_not_file" ? "正文路径不是一个文件，宿主现在拿到的是空正文。" : "正文文件读不出来，宿主现在拿到的是空正文。"),
-      injectBadNext: "删减内容后保存，或用「恢复内置」。",
+      injectBadNext: "请在原文件中修复读取问题或缩减正文，再重新读取。",
 
       rulesTitle: "规则",
       rulesDesc: "规则是一份写给模型的长期指令（比如编码规范）。激活后写进 DSH 数据目录的 AGENTS.md 或 CLAUDE.md，宿主每次对话都会读。同一时间只激活一条。",
@@ -1148,6 +1148,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockPopoverTitle: "破限快捷设置",
       dockModeTitle: "提示词模式",
       dockTierFailed: "切换失败，当前仍是原来那档。",
+      modeUnknown: "档位未知",
+      configReadWarning: "配置读取异常：已沿用可用的已确认配置；缺少可信配置的操作已暂停。修复后刷新核对。",
+      recoveryRequired: "补丁事务尚未完成，请先回退，再重新应用。",
+      budgetUnconfirmed: "档位已保存，但执行预算尚未确认生效；请检查状态后重试。",
+      deletedKept: "规则已删除；落点内容与恢复快照仍保留。",
       dockTierUnknown: "没有收到切换回执，结果未知；已重新读取核对，显示的即当前实际档位。",
       dockTierUnknownOffline: "没有收到切换回执，结果未知；重新读取也失败了，当前档位没能核对上。",
       confirmOverwriteAlias: (from) => `词条「${String(from)}」已存在，确定覆盖吗？`,
@@ -1262,6 +1267,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       wordSavingNote: "正在保存，请稍候。",
       wordSaveFailedTitle: "保存失败，草稿已保留",
       wordSaveFailedNext: "已保存的词库没有改变。确认后可以再试一次。",
+      wordSaveRefusedTitle: "词库状态尚未确认，本次未写入",
+      wordSaveRefusedNext: "草稿已保留，正在重新读取；核对后可重试。",
       wordSaveUnknownTitle: "保存没有回执，结果未知",
       wordSaveUnknownNext: "网络中断或超时不代表后端没有写入。草稿已保留；先重新读取核对，再决定要不要重试。",
       wordSaved: "词条已保存",
@@ -1828,7 +1835,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       donePromptSaved: (s) => `Saved (${String(s)})`,
       donePromptReset: "Built-in body restored",
       injectBad: (c) => (c === "inject_too_large" ? "The body file is over the size limit, so the host currently gets an empty body." : c === "inject_not_file" ? "The body path is not a file, so the host currently gets an empty body." : "The body file cannot be read, so the host currently gets an empty body."),
-      injectBadNext: "Shorten it and save, or use Restore built-in.",
+      injectBadNext: "Fix access to the original file or shorten it there, then read it again.",
 
       rulesTitle: "Rules",
       rulesDesc: "A rule is a standing instruction for the model, such as coding conventions. Activating it writes it into AGENTS.md or CLAUDE.md in your DSH data directory, which the host reads in every conversation. One rule is active at a time.",
@@ -1951,6 +1958,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       dockPopoverTitle: "Quick Breaklimit Settings",
       dockModeTitle: "Prompt Mode",
       dockTierFailed: "Switch failed; the mode is unchanged.",
+      modeUnknown: "Mode unknown",
+      configReadWarning: "Configuration read failed. Confirmed settings remain in use where available; operations without trusted settings are paused. Repair and refresh.",
+      recoveryRequired: "A patch transaction is incomplete. Revert it before applying again.",
+      budgetUnconfirmed: "The mode was saved, but the execution budget is unconfirmed. Check status and retry.",
+      deletedKept: "Rule deleted; landing content and recovery snapshot were retained.",
       dockTierUnknown: "No switch confirmation arrived; the result is unknown. The mode was re-read; what is shown is the actual current mode.",
       dockTierUnknownOffline: "No switch confirmation arrived; the result is unknown. The re-read failed too, so the current mode could not be confirmed.",
       confirmOverwriteAlias: (from) => `Entry "${String(from)}" already exists. Overwrite?`,
@@ -2066,6 +2078,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       wordSavingNote: "Saving; please wait.",
       wordSaveFailedTitle: "Save failed; the draft is kept",
       wordSaveFailedNext: "The saved list is unchanged. Try again when ready.",
+      wordSaveRefusedTitle: "Word list state is unconfirmed; this write was not sent",
+      wordSaveRefusedNext: "The draft is kept while the list is re-read. Retry after reconciliation.",
       wordSaveUnknownTitle: "No save confirmation; the result is unknown",
       wordSaveUnknownNext: "A network error or timeout does not mean the backend stayed unchanged. The draft is kept; re-read to reconcile before retrying.",
       wordSaved: "Entry saved",
@@ -2448,6 +2462,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       case "host_root_unconfigured": return make(T.errNoRoot, T.errNoRootNext, "goOverview")
       case "preflight_blocked":
         return make(T.errBlocked(count(data?.blocked)), T.errBlockedNext, "refresh", { items: blockedLines(data?.blocked) })
+      case "recovery_required": return make(T.recoveryRequired, T.errWriteHalfNext, "goPatches", { tone: "warn" })
+      case "tier_config_unavailable": return make(T.configReadWarning, T.errBadResponseNext, "refresh")
       case "operation_in_progress": return make(T.errBusy, T.errBusyNext, "refresh", { tone: "warn" })
       case "drift_detected":
         return make(T.errDrift(count(data?.drifted)), T.errDriftNext, null, {
@@ -2556,7 +2572,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   }
 
   function modeLabel(mode) {
-    return mode === "unrestricted" ? T.modeUnrestricted : T.modeRecommended
+    return mode === "unrestricted" ? T.modeUnrestricted : mode === "recommended" ? T.modeRecommended : T.modeUnknown
   }
 
   async function writeClipboard(text) {
@@ -2955,7 +2971,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const blocked = Array.isArray(pre?.blocked) ? pre.blocked : []
     const pendingPaths = unique(findings.filter(item => item?.state === "pending").map(item => String(item.path ?? "")))
     const pendingFiles = Number.isFinite(pre?.pendingFiles) ? pre.pendingFiles : pendingPaths.length
-    const tier = MODES.includes(tierInfo?.tier) ? tierInfo.tier : MODES.includes(status?.tier?.active) ? status.tier.active : MODES[0]
+    const tier = MODES.includes(tierInfo?.tier) ? tierInfo.tier : MODES.includes(status?.tier?.active) ? status.tier.active : null
     return {
       pre,
       preCode,
@@ -3734,6 +3750,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       if (!open || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined
       const onKeyDown = (event) => {
         if (event.key !== "Escape") return
+        if (nodeRef.current && !nodeRef.current.contains(event.target)) return
         event.stopPropagation()
         event.preventDefault()
         onClose()
@@ -3839,6 +3856,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     return h("dialog", {
       ref: nodeRef,
+      hidden: !open,
+      inert: open ? undefined : "",
       className: "bkl-dialog",
       "aria-modal": "true",
       "aria-labelledby": titleId,
@@ -4590,12 +4609,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   function PromptBlock({ override, promptError, draft, setDraft, busy, onSave, onReset, onDiscard, onCopy, onRetry, noticeView }) {
     // 读不到正文时，空编辑器和内置正文都是错的展示：内容未知就只说未知，
     // 编辑、保存、恢复内置全部暂停，避免用户拿一个空壳去覆盖真实正文。
-    const loaded = override !== null && promptError === null
+    const effectiveBad = override?.effective?.ok === false
+    const loaded = override !== null && promptError === null && !effectiveBad
     const saved = typeof override?.text === "string" ? override.text : ""
     const value = draft ?? saved
     const dirty = draft !== null && draft !== saved
     const mine = override?.userFileExists === true
-    const effectiveBad = override?.effective && override.effective.ok === false
     const saveWhy = !loaded ? T.whyPromptUnread : busy ? T.whyBusy : !dirty ? T.whyNoChange : value.trim() === "" ? T.whyEmptyPrompt : null
     const resetWhy = !loaded ? T.whyPromptUnread : busy ? T.whyBusy : !mine ? T.whyAlreadyBuiltin : null
 
@@ -4616,7 +4635,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         h(Tag, { tone: loaded ? (mine ? "accent" : undefined) : "error" },
           loaded ? (mine ? T.promptUsingMine(formatBytes(override?.bytes)) : T.promptUsingBuiltin) : T.promptCountUnknown)),
     },
-      promptError === null
+      promptError === null && !effectiveBad
         ? null
         : h(StateBlock, {
           tone: "error",
@@ -4634,10 +4653,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         className: "bkl-input",
         style: merge(S.input, S.textarea, !loaded && S.inputLocked),
         value: loaded ? value : "",
-        placeholder: loaded ? T.promptPlaceholder : promptError === null ? T.loading : T.promptUnknownPlaceholder,
+        placeholder: loaded ? T.promptPlaceholder : promptError === null && !effectiveBad ? T.loading : T.promptUnknownPlaceholder,
         spellCheck: false,
         readOnly: loaded ? undefined : true,
-        "aria-invalid": promptError === null ? undefined : "true",
+        "aria-invalid": promptError === null && !effectiveBad ? undefined : "true",
         "aria-labelledby": "bkl-prompt-title",
         "aria-describedby": "bkl-prompt-desc bkl-prompt-why",
         onChange: (event) => { if (loaded) setDraft(event.target.value) },
@@ -5193,6 +5212,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
   // ---- 分区根 ---------------------------------------------------------------
 
+  let sectionDrafts = { prompt: null, rule: null, word: null }
+
   function Section(props) {
     // 宿主给设置分区传 close：从会话浮窗进来的「返回会话」用它。
     const closeSettings = typeof props?.close === "function" ? props.close : null
@@ -5212,14 +5233,18 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [toast, setToast] = useState(null)
     const [notices, setNotices] = useState({})
     const [restart, setRestart] = useState(null)
-    const [draft, setDraft] = useState(null)
+    const [draft, setDraft] = useState(sectionDrafts.prompt)
     // 三步引导默认收起：首次配置时需要，之后每次进概览都占掉一屏左栏。
     // 折叠态仍留「展开步骤」链接，展开只影响本次挂载（宿主切页签会重挂载）。
     const [guideOpen, setGuideOpen] = useState(false)
-    const [ruleEdit, setRuleEditState] = useState(null)
-    const [selectedRuleId, setSelectedRuleId] = useState(null)
+    const [ruleEdit, setRuleEditState] = useState(sectionDrafts.rule)
+    const [selectedRuleId, setSelectedRuleId] = useState(sectionDrafts.rule?.id ?? null)
     const [ruleBody, setRuleBody] = useState({ id: null, status: "idle", text: "" })
-    const [wordEditor, setWordEditor] = useState(null)
+    const [wordEditor, setWordEditorState] = useState(sectionDrafts.word)
+    const setWordEditor = value => {
+      sectionDrafts.word = typeof value === "function" ? value(sectionDrafts.word) : value
+      setWordEditorState(sectionDrafts.word)
+    }
     const [wordSaving, setWordSaving] = useState(false)
     const [wordSaveError, setWordSaveError] = useState(null)
     const [wordsQuery, setWordsQuery] = useState("")
@@ -5234,7 +5259,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const toastTimer = useRef(undefined)
     // 正文草稿的影子副本：保存完成后要判断「保存期间是不是又输入了」，
     // 而那时闭包里的 draft 是旧值，只能信实时副本。
-    const draftRef = useRef(null)
+    const draftRef = useRef(draft)
     // load() 的请求序号与最后落定序号：旧响应作废，见 load()。桩按 hook 调用序号
     // 注入既有状态，新 hook 一律追加在末尾，插在中间会让后面每一个的序号都错位。
     const loadSeqRef = useRef(0)
@@ -5249,10 +5274,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const setRuleEdit = useCallback((value) => {
       const next = typeof value === "function" ? value(ruleEditRef.current) : value
       ruleEditRef.current = next
+      sectionDrafts.rule = next
       setRuleEditState(next)
     }, [])
     const setPromptDraft = useCallback((value) => {
       draftRef.current = typeof value === "function" ? value(draftRef.current) : value
+      sectionDrafts.prompt = draftRef.current
       setDraft(draftRef.current)
     }, [])
 
@@ -5738,8 +5765,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       }
       const spec = modeSwitchDialogSpec(f.mode, id, () => run("mode", async () => {
         const label = modeLabel(id)
-        await post("/tier", { tier: id })
-        notify("mode", { tone: "ok", title: T.doneMode(label), next: T.doneModeNext })
+        const payload = await post("/tier", { tier: id })
+        notify("mode", payload.data?.budgetVerified === false
+          ? { tone: "warn", title: T.budgetUnconfirmed }
+          : { tone: "ok", title: T.doneMode(label), next: T.doneModeNext })
       }, true))
       openDialog(spec)
     }
@@ -5945,11 +5974,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       const label = rule.name || rule.id
       const active = rule.id === f.activeRule
       const spec = ruleDeleteDialogSpec(rule, () => run("rules", async () => {
-        await post("/rules/delete", { id: rule.id })
+        const payload = await post("/rules/delete", { id: rule.id })
         if (!mounted.current) return
         setRuleEdit(prev => (prev !== null && prev.id === rule.id ? null : prev))
         setSelectedRuleId(prev => (prev === rule.id ? null : prev))
-        notify("rules", { tone: "ok", title: T.doneDeleted(label) })
+        notify("rules", payload.data?.kept || payload.data?.landingKept
+          ? { tone: "warn", title: T.deletedKept }
+          : { tone: "ok", title: T.doneDeleted(label) })
       }, true))
       if (active) {
         spec.body = h("p", { style: S.text }, T.confirmDeleteActiveBody(rule.target))
@@ -6052,7 +6083,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       if (!mounted.current) return
       setWordSaving(false)
       if (!result.ok) {
-        if (result.unknown) {
+        if (result.refused) {
+          setWordSaveError({ tone: "warn", title: T.wordSaveRefusedTitle, next: T.wordSaveRefusedNext })
+          void aliasStore.read()
+        } else if (result.unknown) {
           // 超时/断网不等于后端没写：不宣布「未生效」，草稿留着，先重新读取核对。
           setWordSaveError({ tone: "warn", title: T.wordSaveUnknownTitle, next: T.wordSaveUnknownNext })
           void aliasStore.read()
@@ -6367,6 +6401,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           closeSettings === null
             ? null
             : h(Button, { kind: "icon", label: T.closeSettingsLabel, onClick: () => { closeSettings() } }, h(Icon, { name: "close", size: 16 })))),
+      status?.tier?.error || status?.maskRead?.error || status?.configError
+        ? h(Notice, { notice: { tone: "warn", title: T.configReadWarning } })
+        : null,
       h("div", { id: "bkl-tablist", role: "tablist", "aria-label": T.tabsLabel, style: S.tablist },
         TAB_KEYS.map((key, index) => {
           const selected = tab === key
@@ -6376,7 +6413,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
           const tabError = (key === "rules" && f.rulesIndex === "corrupt")
             || (key === "words" && aliasReadError(aliasStore.state))
             || (key === "patches" && (f.blocked.length > 0 || f.broken))
-            || (key === "prompt" && promptError !== null)
+            || (key === "prompt" && (promptError !== null || override?.effective?.ok === false || status?.tier?.error))
           return h("button", {
             key,
             id: `bkl-tab-${key}`,
@@ -6679,7 +6716,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
   function AliasRow() {
     // 词库状态不在这里另存一份：与设置页共用 aliasStore，两处才不会拿旧列表互相覆盖。
     const [, bumpDock] = useState(0)
-    const [tier, setTier] = useState("recommended")
+    const [tier, setTier] = useState(null)
     const [tierBusy, setTierBusy] = useState(false)
     const [tierState, setTierState] = useState(null)
     const [pendingTier, setPendingTier] = useState(null)
@@ -6700,7 +6737,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const load = useCallback(async () => {
       const tierRes = await get("/tier").catch(() => null)
       if (!aliveRef.current) return
-      if (typeof tierRes?.data?.tier === "string") setTier(tierRes.data.tier)
+      setTier(typeof tierRes?.data?.tier === "string" ? tierRes.data.tier : null)
     }, [])
 
     // 展开浮窗是「每天第一次」的另一个触发点。接口幂等：设置面板今天已经查过时，
@@ -6723,6 +6760,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         if (!aliveRef.current) return
         const applied = payload?.data?.tier
         if (typeof applied === "string") setTier(applied)
+        if (payload?.data?.budgetVerified === false) setTierState("budgetUnconfirmed")
         // 让设置页重新拉一次状态：它那份 tierInfo 不跟着这里变。
         if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
           window.dispatchEvent(new CustomEvent(STATE_CHANGED_EVENT))
@@ -6826,6 +6864,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       // 捕获阶段拦 Esc：宿主也在这层监听它关设置面板，冒泡阶段拦不住。
       const onKeyDown = (event) => {
         if (event.key !== "Escape") return
+        if (!panelRef.current?.contains(event.target) && !rootRef.current?.contains(event.target)) return
         event.stopPropagation()
         event.preventDefault()
         close()
@@ -6880,7 +6919,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       const result = await aliasStore.commit(change)
       if (!aliveRef.current) return
       if (!result.ok) {
-        if (result.unknown) {
+        if (result.refused) {
+          setWriteState({ tone: "warn", title: T.wordSaveRefusedTitle, next: T.wordSaveRefusedNext })
+          void aliasStore.read()
+        } else if (result.unknown) {
           // 超时/断网不等于后端没写：不宣布「未生效」，先重新读取核对。
           setWriteState({ tone: "warn", title: T.wordSaveUnknownTitle, next: T.wordSaveUnknownNext })
           void aliasStore.read()
@@ -7010,7 +7052,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   background: tier === "unrestricted" ? TONE_SOFT.warn : TONE_SOFT.info,
                   color: tier === "unrestricted" ? TONE_COLOR.warn : TONE_COLOR.info,
                 }),
-              }, tier === "unrestricted" ? T.modeUnrestrictedShort : T.modeRecommendedShort),
+              }, tier === "unrestricted" ? T.modeUnrestrictedShort : tier === "recommended" ? T.modeRecommendedShort : T.modeUnknown),
               // 状态胶囊自带圆点：一个元素表达一件事，不再和独立圆点重复。
               h("span", {
                 style: merge(ALIAS.pill, {
@@ -7080,7 +7122,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
                   h("button", { type: "button", style: ALIAS.confirmBtn, "aria-label": T.cancel, onClick: () => { setPendingTier(null) } }, T.cancel))
               : null,
             pendingTier !== null ? h("p", { style: ALIAS.foot }, T.confirmModeBody) : null,
-            tierState === "failed" ? h("p", { style: ALIAS.fail }, T.dockTierFailed)
+            tierState === "budgetUnconfirmed" ? h("p", { style: ALIAS.fail }, T.budgetUnconfirmed)
+              : tierState === "failed" ? h("p", { style: ALIAS.fail }, T.dockTierFailed)
               : tierState === "unknown" ? h("p", { style: ALIAS.fail }, T.dockTierUnknown)
                 : tierState === "unknownOffline" ? h("p", { style: ALIAS.fail }, T.dockTierUnknownOffline)
                   : null),
@@ -7172,6 +7215,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     refreshText()
     // 浮窗要用宿主 slots 的能力（打开设置分区），在 apply 时收好入口。
     hostCtx = ctx
+    ctx.effect?.(() => () => { sectionDrafts = { prompt: null, rule: null, word: null }; hostCtx = null })
     ctx.slots.inject("settings.section", () => ctx.slots.register({
       name: "settings.section",
       id: SECTION_ID,

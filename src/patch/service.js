@@ -43,6 +43,8 @@ export function inspectPatches({ root, home, mode = 'recommended', hashes = PATC
       message: '应用记录不可读，补丁状态无法可靠判定。先处理 state.json 再继续。',
     } }
   }
+  if (mode === null) return { state, preflight: { ok: false, code: 'tier_config_unavailable', message: '档位配置不可用，已暂停应用。' } }
+  if (state.kind === 'ok' && state.state.phase !== 'committed') return { state, preflight: { ok: false, code: 'recovery_required', message: '存在未完成事务，请先回退，再重新应用。' } }
   // 整条记录交给预检，而不是只挑 each 的 after：指纹决定「已应用」与「上一次声明的
   // 版本」，少传它，档位切换就会被判回已应用。缺 declaration 的旧记录原样传下去，
   // 预检会按旧行为放过。

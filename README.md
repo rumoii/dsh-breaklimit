@@ -94,6 +94,7 @@ if (-not (Test-Path -LiteralPath $ProfileManifest)) {
 仍在宿主目录安装，再进入插件目录操作补丁：
 
 ```powershell
+Set-Location "$DshRoot"
 node --import tsx/esm apps/cli/src/bin.ts plugin --profile web-breaklimit add "$PluginRoot"
 if ($LASTEXITCODE -ne 0) { throw '插件安装失败，请停止并检查输出。' }
 

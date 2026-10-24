@@ -6,11 +6,11 @@
 //   tail.md            两档共用的尾部（序号由 config.order 决定，默认 8999）
 //
 // 档位配置保存在 $DSH_HOME/breaklimit/tier.json；旧值 lean / architect / autonomous
-// 一律回退到默认，不迁移、不猜测。
+// 判为非法；无可信快照时暂停受影响操作，不迁移、不猜测。
 
 import path from 'node:path'
 import { breaklimitDir } from '../patch/state.js'
-import { atomicWrite, readTextOrNull } from '../patch/fsx.js'
+import { atomicWrite, decodeUtf8, readBytesStrict } from '../patch/fsx.js'
 
 export const TIERS = Object.freeze(['recommended', 'unrestricted'])
 export const DEFAULT_TIER = 'recommended'
@@ -27,22 +27,33 @@ export function isValidTier(tier) {
  * 读取当前模式。
  *
  * @param {string} home - $DSH_HOME 路径。
- * @returns {{ kind: 'ok' | 'default' | 'corrupt', tier: string, raw?: string }}
+ * @returns {{ kind: 'ok' | 'default' | 'corrupt' | 'unreadable', tier: string, raw?: string }}
  */
-export function readTier(home) {
-  const filePath = tierConfigPath(home)
-  const raw = readTextOrNull(filePath)
-  if (raw === null) return { kind: 'default', tier: DEFAULT_TIER }
-
-  try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed?.tier === 'string' && isValidTier(parsed.tier)) {
-      return { kind: 'ok', tier: parsed.tier }
+export function readTier(home, runtime) {
+  const file = tierConfigPath(home)
+  const read = readBytesStrict(file)
+  let result
+  if (read.kind === 'missing') result = { kind: 'default', tier: DEFAULT_TIER }
+  else if (read.kind === 'unreadable') result = { kind: 'unreadable', tier: DEFAULT_TIER }
+  else {
+    const raw = decodeUtf8(read.bytes)
+    try {
+      const parsed = JSON.parse(raw)
+      result = isValidTier(parsed?.tier)
+        ? { kind: 'ok', tier: parsed.tier }
+        : { kind: 'corrupt', tier: DEFAULT_TIER, raw }
+    } catch {
+      result = { kind: 'corrupt', tier: DEFAULT_TIER, raw }
     }
-    return { kind: 'corrupt', tier: DEFAULT_TIER, raw }
-  } catch {
-    return { kind: 'corrupt', tier: DEFAULT_TIER, raw }
   }
+  if (result.kind === 'ok' || result.kind === 'default') {
+    if (runtime) runtime.tierSnapshot = { file, tier: result.tier }
+    return result
+  }
+  const cached = runtime?.tierSnapshot
+  return { ...result, tier: cached?.file === file ? cached.tier : DEFAULT_TIER,
+    source: cached?.file === file ? 'cached' : 'unavailable',
+    error: 'tier_config_unavailable' }
 }
 
 /**
@@ -84,20 +95,22 @@ export function buildTierPrompt(tier, baseText = '', extensionText = '') {
 /**
  * 解析并生成当前模式的完整信息。
  *
- * kind 一并带出：文件损坏时实际生效的是缺省档，只报档位名会让一次损坏看起来像
- * 本来就在用默认档。调用方据此把损坏报进状态。
+ * kind 与 source 一并带出；source=unavailable 时候选文本不代表已生效，
+ * 运行路径必须通过 readMode 的可信配置判定。
  *
  * @param {string} home - $DSH_HOME 路径。
  * @param {string} baseText - 共用正文。
  * @param {string} extensionText - 该档附加段。
- * @returns {{ kind: 'ok' | 'default' | 'corrupt', tier: string, text: string, bytes: number, available: readonly string[] }}
+ * @returns {{ kind: 'ok' | 'default' | 'corrupt' | 'unreadable', tier: string, text: string, bytes: number, available: readonly string[] }}
  */
-export function resolveTierInfo(home, baseText = '', extensionText = '') {
-  const { kind, tier } = readTier(home)
+export function resolveTierInfo(home, baseText = '', extensionText = '', runtime) {
+  const { kind, tier, source, error } = readTier(home, runtime)
   const text = buildTierPrompt(tier, baseText, extensionText)
   const bytes = Buffer.byteLength(text, 'utf8')
   return {
     kind,
+    source,
+    error,
     tier,
     text,
     bytes,

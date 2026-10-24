@@ -24,12 +24,12 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { atomicWrite, hashText, readTextOrNull } from './fsx.js'
+import { atomicWrite, hashBytes, hashText, readBytesStrict, readTextOrNull } from './fsx.js'
 import { acquireFileLock, createLock, releaseFileLock } from './lock.js'
 import { declarationFingerprint, preflight } from './preflight.js'
 import { PATCHES, DSH_TARGET, replaceVariantsByPath } from './index.js'
 import { PATCH_HASHES } from './hashes.js'
-import { readState, removeState, statePath, transactionDir, transactionsDir, writeState } from './state.js'
+import { STATE_VERSION, readState, removeState, statePath, transactionDir, transactionsDir, writeState } from './state.js'
 
 /** 全进程共用一把锁：Apply、Revert、迁移、重启都在同一个临界区里。 */
 const sharedLock = createLock()
@@ -78,7 +78,7 @@ function snapshotPath(dir, target) {
  */
 function commitState(home, entry) {
   writeState(home, {
-    version: 1,
+    version: STATE_VERSION,
     operationId: entry.operationId,
     phase: entry.phase,
     updatedAt: new Date().toISOString(),
@@ -88,21 +88,37 @@ function commitState(home, entry) {
   })
 }
 
+/** 目标源码必须能无损往返 UTF-8；快照和恢复不经过解码。 */
+function readPatchText(file) {
+  const read = readBytesStrict(file)
+  if (read.kind === 'missing') return null
+  if (read.kind === 'unreadable') throw read.error
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.bytes) }
+  catch { const error = new Error(`目标不是合法 UTF-8，拒绝写入：${file}`); error.code = 'invalid_encoding'; throw error }
+}
+
+function readRequiredBytes(file) {
+  const read = readBytesStrict(file)
+  if (read.kind !== 'ok') throw read.error ?? new Error(`文件不存在：${file}`)
+  return read.bytes
+}
+
 /**
  * 用快照把一组目标文件恢复到原文。
  * @returns {string[]} 回滚过程中的错误描述，空数组表示全部成功。
  */
-function restoreFromSnapshot(root, dir, targets, writeFile) {
+function restoreFromSnapshot(root, dir, targets, writeFile, expected = new Map()) {
   const errors = []
   for (const target of targets) {
     try {
-      const original = readTextOrNull(snapshotPath(dir, target))
-      if (original === null) {
-        errors.push(`${target}: 快照缺失`)
+      const original = readRequiredBytes(snapshotPath(dir, target))
+      const current = readRequiredBytes(path.join(root, target))
+      if (expected.has(target) && hashBytes(current) !== expected.get(target)) {
+        errors.push(`${target}: 当前内容已变化，拒绝补偿覆盖`)
         continue
       }
       writeFile(path.join(root, target), original)
-      if (readTextOrNull(path.join(root, target)) !== original) {
+      if (!readRequiredBytes(path.join(root, target)).equals(original)) {
         errors.push(`${target}: 恢复后内容复校验失败`)
       }
     } catch (error) {
@@ -124,7 +140,8 @@ function restoreFromSnapshot(root, dir, targets, writeFile) {
  */
 function allTargetsAtBefore(root, files) {
   for (const [target, record] of Object.entries(files)) {
-    const current = readTextOrNull(path.join(root, target))
+    const currentRead = readBytesStrict(path.join(root, target))
+    const current = currentRead.kind === 'ok' ? currentRead.bytes : null
     if (current === null) return false
     if (hashText(current) !== record.before) return false
   }
@@ -227,7 +244,7 @@ export function applyPatches({
   }
 
   try {
-    const readFile = (file) => readTextOrNull(file)
+    const readFile = readPatchText
 
     // 记录不可读时停手。一份损坏的清单会让「已应用」判定建立在错误前提上，
     // 而那是整批补丁里唯一能防止重复写入的依据。
@@ -239,6 +256,9 @@ export function applyPatches({
         message: `应用记录不可读，拒绝继续。先处理 ${statePath(home)}，或确认无需恢复后删除它。`,
         operationId,
       }
+    }
+    if (loaded.kind === 'ok' && loaded.state.phase !== 'committed') {
+      return { ok: false, code: 'recovery_required', message: '存在未完成事务，请先回退，再重新应用。', operationId, written: [] }
     }
     // 应用记录整条交给预检：只传 after 哈希的话，判不出「这条记录是上一档写的」。
     const appliedRecords = {}
@@ -332,7 +352,7 @@ export function applyPatches({
     // 不能把异常抛给调用方——调用方拿不到结果就无从判断磁盘到底动没动。
     try {
       for (const [target, change] of result.changes) {
-        writeFile(snapshotPath(dir, target), change.before)
+        writeFile(snapshotPath(dir, target), Buffer.from(change.before, 'utf8'))
         const declared = declarationsByTarget.get(target)
         files[target] = {
           before: hashText(change.before),
@@ -343,25 +363,18 @@ export function applyPatches({
         }
       }
       // 记录与快照同进同退：只继承记录会让 revert 去找不存在的快照，静默漏掉文件，
-      // 比不继承更坏。快照搬不过来就不继承——宁可少记一条，也不记一份兑现不了的承诺。
+      // 比不继承更坏。快照搬不过来就拒绝继续，保留旧账本，不丢弃恢复职责。
       for (const { target, record, fromDir } of inherited) {
-        const snapshot = readTextOrNull(snapshotPath(fromDir, target))
-        if (snapshot === null) {
-          released.push(target)
-          continue
-        }
+        const snapshot = readRequiredBytes(snapshotPath(fromDir, target))
+        if (record.before !== undefined && hashBytes(snapshot) !== record.before) throw new Error(`继承快照与记录不符：${target}`)
         writeFile(snapshotPath(dir, target), snapshot)
-        // 连本批刚写下的记录一起覆盖是故意的。旧记录（after 是旧档内容）配这份原文
-        // 快照，恰好是「写入中途失败→回滚之后还能续做」的状态：旧档内容判
-        // needs_reapply、原文判待应用，重试与回退都判得下去。写入全部完成后、提交前
-        // 被硬杀的窗口仍两头都判不出来，只能靠 tools/rebuild-state.mjs 恢复——那是
-        // 既有形态，这里不解决。旧记录升级成这一批的版本（after 换成写下的哈希、
-        // 补上声明指纹）要等提交成功之后，见 committedFiles——提前升级，失败后的
-        // 混合状态（有的文件已回原文、有的还停在旧档）两头都判不出来。
+        // 继承原始快照与旧档哈希；本批的新哈希在 pendingAfter 中先于目标写入持久化。
+        // 中断后回退接受三种已知内容，提交成功再将 after 升级为本批结果。
         // before 缺失的旧记录按快照补上：回退恢复的就是快照字节，账本必须兑现它。
         files[target] = record.before === undefined ? { ...record, before: hashText(snapshot) } : record
         inheritedNow.add(target)
       }
+      for (const [target, change] of result.changes) files[target] = { ...files[target], pendingAfter: hashText(change.after) }
       atomicWrite(path.join(dir, 'manifest.json'), `${JSON.stringify({
         operationId,
         // 先记 pending：同一份 phase 也进清理判据，失败现场因此不会被当成垃圾。
@@ -387,8 +400,10 @@ export function applyPatches({
     }
 
     const written = []
+    const expectedWrites = new Map([...result.changes].map(([target, change]) => [target, hashText(change.after)]))
     try {
       for (const [target, change] of result.changes) {
+        if (readPatchText(path.join(root, target)) !== change.before) throw new Error(`写入前目标已变化：${target}`)
         writeFile(path.join(root, target), change.after)
         written.push(target)
         // 复校验：写完立刻读回，确认磁盘上的内容确实是我们要写的那一份。比对对象是
@@ -400,7 +415,7 @@ export function applyPatches({
         }
       }
     } catch (error) {
-      const rollbackErrors = restoreFromSnapshot(root, dir, written, writeFile)
+      const rollbackErrors = restoreFromSnapshot(root, dir, written, writeFile, expectedWrites)
       const settlement = settleAfterRollback(home, root, { operationId, dir, files, rollbackErrors })
       return {
         ok: false,
@@ -420,7 +435,10 @@ export function applyPatches({
 
     // 提交成功才升级被继承的旧记录：after 换成这一批真正写下的哈希、补上本批声明
     // 指纹。before 与快照沿旧记录的原文不动——回退要回到的是原文，不是旧档中间态。
-    const committedFiles = { ...files }
+    const committedFiles = Object.fromEntries(Object.entries(files).map(([target, record]) => {
+      const { pendingAfter: _pendingAfter, ...committed } = record
+      return [target, committed]
+    }))
     for (const target of inheritedNow) {
       const change = result.changes.get(target)
       if (change === undefined) continue
@@ -437,7 +455,7 @@ export function applyPatches({
     } catch (error) {
       // 目标文件已经改了，却写不下状态记录——下一次 Revert 会说「没有记录」。
       // 这时唯一能保持磁盘一致的做法是把文件也退回去，并如实报告。
-      const rollbackErrors = restoreFromSnapshot(root, dir, written, writeFile)
+      const rollbackErrors = restoreFromSnapshot(root, dir, written, writeFile, expectedWrites)
       const settlement = settleAfterRollback(home, root, { operationId, dir, files, rollbackErrors })
       return {
         ok: false,
@@ -473,6 +491,8 @@ export function applyPatches({
       blocked: [],
       written,
     }
+  } catch (error) {
+    return { ok: false, code: error?.code === 'invalid_encoding' ? 'invalid_encoding' : 'io_failed', message: `文件操作失败，未清除已有恢复记录：${String(error?.message ?? error)}`, operationId }
   } finally {
     releaseFileLock(fileGuard)
     lock.release(operationId)
@@ -550,7 +570,8 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
     // 返回码必须分开，否则使用者会去查宿主文件，而真正坏掉的是备份。
     let snapshotCorrupt = false
     for (const [target, record] of Object.entries(state.files)) {
-      const snapshot = readTextOrNull(snapshotPath(dir, target))
+      const snapshotRead = readBytesStrict(snapshotPath(dir, target))
+      const snapshot = snapshotRead.kind === 'ok' ? snapshotRead.bytes : null
       if (snapshot === null) {
         drifted.push({ path: target, reason: '快照缺失，无法恢复' })
         continue
@@ -563,14 +584,15 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
         drifted.push({ path: target, reason: '快照内容与记录不符，拒绝恢复' })
         continue
       }
-      const current = readTextOrNull(path.join(root, target))
+      const currentRead = readBytesStrict(path.join(root, target))
+      const current = currentRead.kind === 'ok' ? currentRead.bytes : null
       if (current === null) {
         drifted.push({ path: target, reason: '文件已不存在' })
         continue
       }
       const now = hashText(current)
-      if (now === record.after) {
-        plan.push({ target, before: snapshot })
+      if (now === record.after || (partial && now === record.pendingAfter)) {
+        plan.push({ target, before: snapshot, expected: now })
         continue
       }
       // 中断后重试：这个文件在之前的尝试里已经写回原文。判定用磁盘内容，不用
@@ -618,8 +640,8 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
     const backupFiles = {}
     try {
       for (const item of plan) {
-        const current = readTextOrNull(path.join(root, item.target))
-        const content = current === null ? '' : current
+        const content = readRequiredBytes(path.join(root, item.target))
+        if (hashBytes(content) !== item.expected) throw new Error(`备份前目标已变化：${item.target}`)
         writeFile(snapshotPath(backupDir, item.target), content)
         backupFiles[item.target] = { before: hashText(content), after: hashText(item.before) }
       }
@@ -677,9 +699,10 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
     const progressErrors = []
     for (const item of plan) {
       try {
+        if (hashBytes(readRequiredBytes(path.join(root, item.target))) !== item.expected) throw new Error(`回退前目标已变化：${item.target}`)
         writeFile(path.join(root, item.target), item.before)
         restoredThisRun.push(item.target)
-        if (readTextOrNull(path.join(root, item.target)) !== item.before) {
+        if (!readRequiredBytes(path.join(root, item.target)).equals(item.before)) {
           throw new Error(`回退后内容复校验失败：${item.target}`)
         }
         progress = {
@@ -705,12 +728,13 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
     if (failures.length > 0) {
       // 补偿用本次的备份把已写回的文件恢复到回退前。补偿本身可能失败，所以
       // 「哪些文件真的回到原文」不能从尝试次数推断，只能逐个读回来判定。
-      const recoveryErrors = restoreFromSnapshot(root, backupDir, restoredThisRun, writeFile)
+      const recoveryErrors = restoreFromSnapshot(root, backupDir, restoredThisRun, writeFile, new Map(plan.map(item => [item.target, hashBytes(item.before)])))
       // 与成功分支同一个含义：磁盘上已经等于 record.before 的那些文件。遍历清单
       // 而不是遍历本次写过谁——先前尝试里已回退的文件也算数，补偿删掉的文件不算。
       const stillReverted = []
       for (const [target, record] of Object.entries(state.files)) {
-        const current = readTextOrNull(path.join(root, target))
+        const currentRead = readBytesStrict(path.join(root, target))
+        const current = currentRead.kind === 'ok' ? currentRead.bytes : null
         if (current !== null && hashText(current) === record.before) stillReverted.push(target)
       }
       // 清单里的 restored 必须和磁盘对得上：它是下一次重试的起点，写错就会跳过
@@ -753,6 +777,8 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
       restored,
       ...(progressErrors.length > 0 ? { progressErrors } : {}),
     }
+  } catch (error) {
+    return { ok: false, code: error?.code === 'invalid_encoding' ? 'invalid_encoding' : 'io_failed', message: `文件操作失败，未清除已有恢复记录：${String(error?.message ?? error)}`, operationId }
   } finally {
     releaseFileLock(fileGuard)
     lock.release(operationId)

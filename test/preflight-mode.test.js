@@ -70,6 +70,7 @@ function writeState(home, files) {
     version: 1,
     operationId: 'tx-test',
     phase: 'committed',
+    transaction: path.join(home, 'breaklimit', 'transactions', 'fixture'),
     updatedAt: '2026-01-01T00:00:00.000Z',
     files,
   }), 'utf8')

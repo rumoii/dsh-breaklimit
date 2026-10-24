@@ -17,7 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { atomicWrite, decodeUtf8, readBytesStrict } from './fsx.js'
 
-export const STATE_VERSION = 1
+export const STATE_VERSION = 2
 
 /** DSH_HOME，解析规则与宿主自身一致。 */
 export function resolveHome(env = process.env) {
@@ -72,17 +72,38 @@ export function readState(home) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { kind: 'corrupt', reason: '顶层不是对象' }
   }
-  if (parsed.version !== STATE_VERSION) {
+  if (parsed.version !== 1 && parsed.version !== STATE_VERSION) {
     return { kind: 'version_mismatch', found: parsed.version, expected: STATE_VERSION }
   }
   if (parsed.files === null || typeof parsed.files !== 'object' || Array.isArray(parsed.files)) {
     return { kind: 'corrupt', reason: 'files 不是对象' }
   }
+  if (parsed.version === STATE_VERSION && !['pending', 'committed', 'rollback-failed', 'reverting'].includes(parsed.phase)) {
+    return { kind: 'corrupt', reason: 'phase 无效' }
+  }
+  const inside = (base, file) => {
+    const relative = path.relative(path.resolve(base), path.resolve(file))
+    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)
+  }
+  if (typeof parsed.transaction !== 'string' || !path.isAbsolute(parsed.transaction)
+    || !inside(transactionsDir(home), parsed.transaction)) {
+    return { kind: 'corrupt', reason: 'transaction 不属于当前事务目录' }
+  }
+  for (const [target, record] of Object.entries(parsed.files)) {
+    if (!target || target.includes('\\') || target.split('/').some(part => part === '..' || part === '.' || part === '')
+      || path.isAbsolute(target) || /^[a-z]:/i.test(target)
+      || record === null || typeof record !== 'object' || Array.isArray(record)
+      || typeof record.after !== 'string'
+      || (record.before !== undefined && typeof record.before !== 'string')
+      || (record.pendingAfter !== undefined && typeof record.pendingAfter !== 'string')) {
+      return { kind: 'corrupt', reason: 'files 中的目标路径或记录无效' }
+    }
+  }
   return { kind: 'ok', state: parsed }
 }
 
 export function writeState(home, state) {
-  atomicWrite(statePath(home), `${JSON.stringify(state, null, 2)}\n`)
+  atomicWrite(statePath(home), `${JSON.stringify({ ...state, version: STATE_VERSION }, null, 2)}\n`)
 }
 
 /** 删除清单。只删清单，不动快照：回滚能力比目录整洁重要。 */

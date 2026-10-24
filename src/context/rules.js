@@ -510,7 +510,7 @@ function saveRuleLocked(home, id, text, meta) {
   const unusable = indexUnusableFailure(index)
   if (unusable !== null) return unusable
   const existing = index.rules.find(rule => rule.id === id)
-  const normalized = normalizeMeta(id, meta ?? existing ?? {})
+  const normalized = normalizeMeta(id, { ...existing, ...Object.fromEntries(Object.entries(meta ?? {}).filter(([, value]) => value !== undefined)) })
   const previousBody = readRule(home, id)
   const previousText = previousBody.ok ? previousBody.text : null
 
@@ -694,6 +694,13 @@ function settleLanding(home, landing, ourText, { keepSnapshot = false } = {}) {
     return result
   }
   const currentBytes = current.bytes
+  if (!landing.created) {
+    const snapshot = readBytesStrict(landingPath(home, landing.target))
+    if (snapshot.kind === 'ok' && currentBytes.equals(snapshot.bytes)) {
+      result.restored = true
+      return result
+    }
+  }
   const ours = writtenHash === null
     ? ourBytes !== null && currentBytes.equals(ourBytes)
     : hashBytes(currentBytes) === writtenHash
@@ -1095,7 +1102,7 @@ export function deactivateRule(home) {
     const skipped = []
     let settlement = { removed: false, restored: false, skipped: [] }
     if (index.active !== null) {
-      settlement = settleLanding(home, index.landing, activeRuleTextOrNull(home))
+      settlement = settleLanding(home, index.landing, activeRuleTextOrNull(home), { keepSnapshot: true })
       skipped.push(...settlement.skipped)
     }
     const kept = index.active !== null && skipped.length > 0
@@ -1111,6 +1118,7 @@ export function deactivateRule(home) {
     } catch (error) {
       return indexWriteFailure(error, '取消激活')
     }
+    if (!kept && settlement.restored) discardSnapshot(home, index.landing.target, true)
     return {
       ok: true,
       active: kept,
@@ -1141,7 +1149,7 @@ export function deleteRule(home, id) {
     if (unusable !== null) return unusable
     const wasActive = index.active === id
     const settlement = wasActive
-      ? settleLanding(home, index.landing, activeRuleTextOrNull(home))
+      ? settleLanding(home, index.landing, activeRuleTextOrNull(home), { keepSnapshot: true })
       : { removed: false, restored: false, skipped: [] }
     const kept = wasActive && settlement.skipped.length > 0
     const landingKept = kept ? index.landing : null
@@ -1160,6 +1168,7 @@ export function deleteRule(home, id) {
     } catch (error) {
       return indexWriteFailure(error, '删除规则')
     }
+    if (wasActive && !kept && settlement.restored) discardSnapshot(home, index.landing.target, true)
     try {
       fs.rmSync(ruleTextPath(home, id), { force: true })
     } catch (error) {
@@ -1191,8 +1200,9 @@ export function resetRules(home) {
     const unusable = indexUnusableFailure(index)
     if (unusable !== null) return unusable
     const skipped = []
+    let settlement
     if (index.active !== null) {
-      const settlement = settleLanding(home, index.landing, activeRuleTextOrNull(home))
+      settlement = settleLanding(home, index.landing, activeRuleTextOrNull(home), { keepSnapshot: true })
       skipped.push(...settlement.skipped)
     }
     try {
@@ -1200,6 +1210,7 @@ export function resetRules(home) {
     } catch (error) {
       return indexWriteFailure(error, '清空规则')
     }
+    if (settlement?.restored) discardSnapshot(home, index.landing.target, true)
     let removed = 0
     for (const rule of index.rules) {
       try {
@@ -1233,7 +1244,7 @@ export function ensureInitialState(home) {
   if (index.kind === 'unreadable') {
     return { active: null, imported: null, error: `规则清单读不到，已跳过收拢：${index.error ?? '未知读取错误'}` }
   }
-  if (index.rules.length > 0) return { active: index.active, imported: null, skipped: [] }
+  if (index.kind !== 'absent') return { active: index.active, imported: null, skipped: [] }
   const skipped = []
   for (const target of RULE_TARGETS) {
     const state = readTargetState(home, target)

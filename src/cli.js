@@ -112,8 +112,9 @@ function parseArgs(argv, env) {
     } else if (arg === '--edit') takeAction('edit')
     else if (arg === '--rules') takeAction('rules')
     else if (arg === '--host-root') {
+      if (!argv[index + 1] || argv[index + 1].startsWith('-')) { out.unknown = '--host-root 缺少路径'; continue }
       index += 1
-      out.hostRoot = argv[index] ?? null
+      out.hostRoot = argv[index]
     } else if (arg.startsWith('--host-root=')) {
       out.hostRoot = arg.slice('--host-root='.length)
     } else if (out.unknown === null) {
@@ -501,6 +502,11 @@ function runEdit(env) {
  * @returns {number | null} 退出码；null 表示不需要设置（例如 --edit 交给子进程）。
  */
 export function run(argv, env = process.env, deps = {}) {
+  try { return runUnchecked(argv, env, deps) }
+  catch (error) { process.stderr.write(`${error?.code ?? 'operation_failed'}：${String(error?.message ?? error)}\n`); return 1 }
+}
+
+function runUnchecked(argv, env, deps) {
   const options = parseArgs(argv, env)
   const home = resolveHome(env)
 
@@ -524,6 +530,7 @@ export function run(argv, env = process.env, deps = {}) {
   if (options.action === 'tier') {
     const targetTier = options.tier
     if (!targetTier) {
+      readMode(home)
       const current = readTier(home)
       process.stdout.write(`当前提示词档位：${current.tier}（可选：${TIERS.join(', ')}）\n`)
       return 0
@@ -537,6 +544,8 @@ export function run(argv, env = process.env, deps = {}) {
     return 0
   }
   if (options.action === 'rules') {
+    const index = rules.readIndex(home)
+    if (index.kind === 'corrupt' || index.kind === 'unreadable') { process.stderr.write(`规则清单不可读：${index.kind}\n`); return 1 }
     const listed = rules.listRules(home)
     if (listed.length === 0) {
       process.stdout.write('规则目录为空。\n')

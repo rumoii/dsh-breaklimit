@@ -9,7 +9,7 @@ import { resolveHostRootInfo } from './host-root.js'
 import { currentMode, describeSandboxPolicy, sessionOf } from './seams.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
-import { promptMode, readMode, readModeExtension, readTail } from '../context/prompt.js'
+import { readModeExtension, readTail } from '../context/prompt.js'
 import { describeLoader, readRuntimeLimits, recheckBudget } from './capabilities.js'
 
 const name = 'rumo-dsh-breaklimit'
@@ -147,7 +147,9 @@ export function buildStatus(ctx, config, runtime) {
   const home = resolveHome()
   const hostRootInfo = resolveHostRootInfo(config)
   const hostRoot = hostRootInfo.root
-  const mode = readMode(home)
+  const tierRead = tiers.readTier(home, runtime)
+  const mode = tierRead.source === 'unavailable' ? null : tierRead.tier
+  const injected = readInject(config)
   const { state: loaded, preflight: preflightSummary } = inspectPatches({ root: hostRoot, home, mode })
   const session = sessionOf(runtime.holder)
   const sandbox = describeSandboxPolicy(ctx, session)
@@ -155,6 +157,8 @@ export function buildStatus(ctx, config, runtime) {
   return {
     plugin: name,
     promptMode: mode,
+    configError: runtime.configError ?? null,
+    maskRead: runtime.maskRead ?? null,
     budget: readRuntimeLimits(ctx),
     budgetApply: recheckBudget(ctx),
     loader: describeLoader(ctx),
@@ -184,16 +188,16 @@ export function buildStatus(ctx, config, runtime) {
       hardenMisses: runtime.counters.hardenMisses,
     },
     inject: (() => {
-      const injected = readInject(config)
       return { ok: injected.ok, code: injected.code, message: injected.message, file: injected.file, bytes: injected.bytes }
     })(),
     tier: (() => {
-      const injected = readInject(config)
       const base = injected.ok ? injected.text : ''
-      const info = tiers.resolveTierInfo(home, base, readModeExtension(promptMode(tiers.readTier(home).tier)))
+      const info = tiers.resolveTierInfo(home, base, readModeExtension(mode), runtime)
       const tail = readTail()
       return {
-        active: info.tier,
+        active: mode,
+        source: tierRead.source ?? 'disk',
+        error: tierRead.error ?? null,
         kind: info.kind,
         available: info.available,
         bytes: info.bytes,
@@ -350,13 +354,13 @@ export function formatStatusText(status) {
   const lines = [
     'rumo-dsh-breaklimit',
     `  接管开关      ${status.enabled ? '开' : '关'}`,
-    `  当前档位      ${status.mode}`,
+    `  ${status.modeSource === 'session' ? '当前档位' : '部署默认档'}      ${status.mode}`,
     permissionLine(status.permission),
     `  目标宿主      ${status.target.version} @ ${status.target.commit.slice(0, 12)}`,
     `  宿主根        ${status.hostRoot ?? '未配置（补丁状态无法判定）'}${status.hostRootSource === 'derived' ? '（由宿主进程推导）' : ''}`,
     `  补丁预检      ${pre.code}${pre.pendingFiles === undefined ? '' : `，待写入 ${String(pre.pendingFiles)} 个文件`}`,
     `  应用记录      ${appliedLine(status.applied)}`,
-    `  提示词档位    ${status.tier?.active ?? tiers.DEFAULT_TIER}（可选：${status.tier?.available ? status.tier.available.join('/') : tiers.TIERS.join('/')}，${String(status.tier?.bytes ?? status.inject.bytes)} 字节）`,
+    `  提示词档位    ${status.tier?.source === 'unavailable' ? '未知' : status.tier?.active ?? tiers.DEFAULT_TIER}（可选：${status.tier?.available ? status.tier.available.join('/') : tiers.TIERS.join('/')}，${String(status.tier?.bytes ?? status.inject.bytes)} 字节）`,
     `  注入文件      ${status.inject.file}`,
     `  注入大小      ${String(status.inject.bytes)} 字节`,
     `  注入状态      ${status.inject.ok ? '可读' : `${status.inject.code}：${status.inject.message}`}`,
@@ -377,9 +381,11 @@ export function formatStatusText(status) {
   if (status.injection?.inert === true) {
     lines.push(`  注入告警      ${status.injection.reason}`)
   }
-  if (status.tier?.kind === 'corrupt') {
-    lines.push(`  档位问题      tier_config_corrupt：$DSH_HOME/breaklimit/tier.json 读不出或内容非法，当前按缺省档 ${String(status.tier.active)} 生效`)
+  if (status.tier?.kind === 'corrupt' || status.tier?.kind === 'unreadable') {
+    lines.push(`  档位问题      tier_config_corrupt：$DSH_HOME/breaklimit/tier.json 读不出或内容非法，${status.tier.source === 'cached' ? `沿用已确认档位 ${String(status.tier.active)}` : '无可信档位，相关操作已暂停'}`)
   }
+  if (status.maskRead?.error) lines.push(`  词表告警      ${status.maskRead.error}（${status.maskRead.source}）`)
+  if (status.configError) lines.push(`  配置告警      ${status.configError}`)
   if (status.rulesIndex === 'corrupt') {
     lines.push('  规则问题      rules_index_corrupt：$DSH_HOME/breaklimit/rules.json 读不出或版本不符，已停止写入以保护原数据')
   }

@@ -7,7 +7,7 @@ import { buildStatus, formatStatusText } from './status.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
-import { applyModeBudget, readRuntimeLimits, resolveBudgets } from './capabilities.js'
+import { switchTier, readRuntimeLimits, resolveBudgets } from './capabilities.js'
 import { inspectPatches } from '../patch/service.js'
 import { resolvePatches } from '../patch/patch-selection.js'
 import { diffPrompt, formatDiff, formatUpgrade, importRule, upgradeReport } from './inspect.js'
@@ -35,18 +35,22 @@ export function registerCommands(ctx, config, runtime) {
           const targetTier = (parts[1] ?? '').toLowerCase()
           const home = resolveHome()
           if (!targetTier) {
-            const current = tiers.readTier(home)
-            return { kind: 'success', text: `当前提示词档位：${current.tier}（可选：${tiers.TIERS.join(', ')}）` }
+            const current = tiers.readTier(home, runtime)
+            if (current.source === 'unavailable') return { kind: 'error', text: '档位配置不可用，相关操作已暂停。' }
+            return { kind: 'success', text: `当前提示词档位：${current.tier}${current.source === 'cached' ? '（读取失败，沿用已确认配置）' : ''}（可选：${tiers.TIERS.join(', ')}）` }
           }
           if (!tiers.isValidTier(targetTier)) {
             return { kind: 'error', text: `非法档位 "${targetTier}"。可用：${tiers.TIERS.join(', ')}。` }
           }
-          tiers.writeTier(home, targetTier)
-          void applyModeBudget(ctx, readMode(home), resolveBudgets(config))
-          return { kind: 'success', text: `提示词模式已切换至 "${targetTier}"；可即时生效的上限已重设，源码补丁仍需回退并重新应用。` }
+          return switchTier(ctx, home, targetTier, resolveBudgets(config)).then(result => ({
+            kind: result.verified ? 'success' : 'error',
+            text: result.verified
+              ? `提示词模式已切换至 "${targetTier}"；预算已确认生效，源码补丁仍需回退并重新应用。`
+              : `提示词模式已保存为 "${targetTier}"；预算生效未确认，请检查状态后重试。`,
+          }))
         }
         if (action === 'doctor') {
-          return doctorReport(ctx, config)
+          return doctorReport(ctx, config, runtime)
         }
         if (action === 'upgrade') {
           const root = resolveHostRoot(config)
@@ -54,14 +58,14 @@ export function registerCommands(ctx, config, runtime) {
             return { kind: 'error', text: '未配置宿主根，无法核对。设置 hostRoot 或 DSH_BREAKLIMIT_HOST_ROOT。' }
           }
           const home = resolveHome()
-          const patches = resolvePatches(home, promptMode(tiers.readTier(home).tier))
+          const patches = resolvePatches(home, promptMode(tiers.readTier(home, runtime).tier))
           const report = upgradeReport(root, patches)
           return { kind: report.ok ? 'success' : 'error', text: formatUpgrade(report) }
         }
         if (action === 'diff') {
           const home = resolveHome()
           const loaded = readInject(config)
-          const mode = promptMode(tiers.readTier(home).tier)
+          const mode = promptMode(tiers.readTier(home, runtime).tier)
           const head = tiers.buildTierPrompt(mode, loaded.ok ? loaded.text : '', readModeExtension(mode))
           return { kind: 'success', text: formatDiff(diffPrompt(head)) }
         }
@@ -81,7 +85,7 @@ export function registerCommands(ctx, config, runtime) {
           }
           const home = resolveHome()
           const result = action === 'apply'
-            ? applySelectedPatches({ root, home, mode: readMode(home) })
+            ? applySelectedPatches({ root, home, mode: readMode(home, runtime) })
             : revertPatches({ root, home })
           return { kind: result.ok ? 'success' : 'error', text: result.message }
         }
@@ -168,9 +172,9 @@ export function registerCommands(ctx, config, runtime) {
  * 三类结论分开说，因为修复方式不同：上限可以直接重设，源码补丁必须回退后重新应用，
  * 而宿主根未配置时前两者都无从判定。
  */
-export function doctorReport(ctx, config) {
+export function doctorReport(ctx, config, runtime) {
   const home = resolveHome()
-  const mode = readMode(home)
+  const mode = readMode(home, runtime)
   // 诊断与实际提交读同一份预算；否则覆盖配置后 doctor 会拿内置值误报不一致。
   const expected = resolveBudgets(config)[mode]
   const now = readRuntimeLimits(ctx)

@@ -110,3 +110,14 @@ HTTP 响应里的绝对路径一律脱敏：盘符、用户目录与中间层级
 `GET /breaklimit/status` 与 `GET /breaklimit/rules/status` 的 `pendingActivation.phase: "cleanup"` 表示新激活已提交、旧落点仍待收尾，`previous` 保留旧归属。激活成功响应的 `cleanupPending: true` 具有相同含义。读取或写入故障解决后，启动或下次规则写操作会重试；仍失败时规则写入口返回 409（失败 `code` 按各路由既有归一：`/rules/save` 透传 `conflict`，激活/取消/删除/重置归一为 `rule_invalid`），不会覆盖恢复记录。没有 phase 的旧激活意图不会被当成已提交的收尾。
 
 同落点切换不先恢复原文再接管，`snapshotKept` 如实反映沿用首次快照。取消激活返回 `deactivate_kept` 时规则仍生效，不能按 HTTP 200 推断已取消。
+
+
+## 配置读取与事务恢复
+
+- `/override` 保持 HTTP 200；`data.effective.ok=false` 表示正文未知，不能编辑、保存、复制或恢复。修复原文件后重新读取；保存使用原子替换。
+- 档位与词表不可读或损坏时，同一插件实例沿用最近成功读取的配置并告警。无可信快照时暂停受影响操作；文件不存在仍表示默认档位或空词表。CLI 不共享运行进程的快照。
+- `GET /tier` 的 `source` 为 `disk`、`cached` 或 `unavailable`；不可用时 `tier=null`，`error` 给出原因。`POST /tier` 返回 `budget` 与 `budgetVerified`。`tier_saved_budget_unconfirmed` 表示档位已保存，但不能确认执行预算生效。
+- 规则清单存在但为空时保持为空；仅清单不存在时自动收拢落点。保存规则省略 `target` 时保留原落点。
+- 新补丁事务写 `state.json` v2，新代码读取 v1/v2。`pendingAfter` 在目标写入前记录本批计划哈希；中断后应用返回 HTTP 409 / `recovery_required`，先回退，再重新应用。旧 v1 事故缺少充分证据时保留现场，使用重建工具核对，不能强行接管。
+- 有 v2 记录时不能直接降级旧代码；先用新版完成回退并确认记录清除。旧代码会拒绝 v2，而非猜测恢复。事务目录和快照不能因降级而删除。
+- 文本补丁只接受可无损往返的 UTF-8；非法编码整体拒写。快照与恢复按原始字节处理，保留 BOM。备份读失败、快照缺失和写前内容变化均拒绝覆盖。

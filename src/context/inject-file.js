@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveHome } from '../patch/state.js'
-import { readTextOrNull, sizeOf } from '../patch/fsx.js'
+import { readTextOrNull } from '../patch/fsx.js'
 
 const DEFAULT_MAX_INJECT_BYTES = 512 * 1024
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -28,12 +28,22 @@ export function maxInjectBytes(config) {
 export function readInject(config) {
   const limit = maxInjectBytes(config)
   const user = userInjectPath(config)
-  const file = sizeOf(user) > 0 ? user : PACKAGE_INJECT
+  let file = user
   let stat
   try {
     stat = fs.statSync(file)
-  } catch {
-    return { ok: false, code: 'inject_missing', message: `注入文件不可读：${file}`, text: '', file, bytes: 0 }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return { ok: false, code: 'inject_unreadable', message: `注入文件不可读：${file}`, text: '', file, bytes: 0 }
+    }
+  }
+  if (stat === undefined || (stat.isFile() && stat.size === 0)) {
+    file = PACKAGE_INJECT
+    try {
+      stat = fs.statSync(file)
+    } catch {
+      return { ok: false, code: 'inject_missing', message: `注入文件不可读：${file}`, text: '', file, bytes: 0 }
+    }
   }
   if (!stat.isFile()) {
     return { ok: false, code: 'inject_not_file', message: `注入路径不是文件：${file}`, text: '', file, bytes: 0 }

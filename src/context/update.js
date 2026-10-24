@@ -12,7 +12,7 @@ import https from 'node:https'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { breaklimitDir } from '../patch/state.js'
-import { atomicWrite, readTextOrNull } from '../patch/fsx.js'
+import { atomicWrite, decodeUtf8, readBytesStrict } from '../patch/fsx.js'
 import { acquireFileLock, releaseFileLock } from '../patch/lock.js'
 
 export const REPO = 'rumoii/dsh-breaklimit'
@@ -80,8 +80,10 @@ const STATE_FIELDS = ['autoCheckUpdates', 'lastAutoCheckDay', 'latestVersion', '
  * @returns {{ kind: 'ok' | 'default' | 'corrupt', state: object }} 解析结果与状态。
  */
 export function readUpdateState(home) {
-  const raw = readTextOrNull(updateStatePath(home))
-  if (raw === null) return { kind: 'default', state: {} }
+  const read = readBytesStrict(updateStatePath(home))
+  if (read.kind === 'missing') return { kind: 'default', state: {} }
+  if (read.kind === 'unreadable') return { kind: 'unreadable', state: {} }
+  const raw = decodeUtf8(read.bytes)
   let parsed
   try {
     parsed = JSON.parse(raw)
@@ -157,6 +159,11 @@ export function writeUpdateState(home, patch) {
     const current = readUpdateState(home)
     // 损坏的文件里可能存着「关闭自动检查」这类偏好：先按 rules.json 的恢复先例备份，
     // 备份不成就不写——宁可留在损坏态，也不把用户的选择悄悄抹掉。
+    if (current.kind === 'unreadable') {
+      const error = new Error('更新偏好读不到，已拒绝覆盖。')
+      error.code = 'state_unreadable'
+      throw error
+    }
     if (current.kind === 'corrupt') backUpCorruptState(home)
     const next = { ...current.state, ...patch }
     atomicWrite(updateStatePath(home), `${JSON.stringify(next, null, 2)}\n`)
@@ -492,7 +499,8 @@ let pendingAuto = null
 export function autoCheck({ home, currentVersion, check = defaultCheck, now = () => new Date() }) {
   if (pendingAuto !== null) return pendingAuto
   pendingAuto = (async () => {
-    const { state } = readUpdateState(home)
+    const { kind, state } = readUpdateState(home)
+    if (kind === 'unreadable' || kind === 'corrupt') return { ...viewOf(state, currentVersion), lastError: kind === 'unreadable' ? 'state_unreadable' : 'state_corrupt' }
     if (!isAutoCheckOn(state)) return { ...viewOf(state, currentVersion), lastError: null }
     const today = localDay(now())
     if (state.lastAutoCheckDay === today) return { ...viewOf(state, currentVersion), lastError: null }

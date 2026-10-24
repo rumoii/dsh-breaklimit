@@ -239,6 +239,24 @@ test('正文读取失败时不显示空正文或内置正文，也不许覆盖',
   assert.equal(retry !== undefined, true)
 })
 
+test('HTTP 成功但 effective 读取失败时，正文仍未知且所有覆盖操作暂停', () => {
+  const { exported } = loadClient()
+  const tree = mount(exported.PromptBlock({
+    override: { text: '', userFileExists: true, bytes: 900000, effective: { ok: false, code: 'inject_too_large' } },
+    promptError: null, draft: 'new text', setDraft() {}, busy: false,
+    onSave() { assert.fail('must not save') }, onReset() { assert.fail('must not reset') },
+    onDiscard() {}, onCopy() { assert.fail('must not copy') }, onRetry() {}, noticeView: null,
+  }))
+  const textarea = findAll(tree, n => n.type === 'textarea')[0]
+  assert.equal(textarea.props.readOnly, true)
+  assert.equal(textarea.props['aria-invalid'], 'true')
+  for (const label of ['Save', 'Restore built-in', 'Copy all']) {
+    const button = findAll(tree, n => n.type === 'button').find(n => textOf(n).includes(label))
+    assert.equal(button.props['aria-disabled'], 'true')
+    button.props.onClick({ preventDefault() {} })
+  }
+})
+
 test('正文读取成功后才允许编辑与保存，草稿优先于已保存正文', () => {
   const { exported } = loadClient()
   let received = null
@@ -2507,7 +2525,7 @@ test('阶段五收官：会话浮窗微窗口（dockPanel）外观、标题栏�
   assert.equal(Boolean(titlebar), true, '微窗口必须包含可拖拽标题栏')
   const titleText = textOf(titlebar)
   assert.equal(titleText.includes('破限快捷设置'), true, '标题栏必须包含破限快捷设置标题')
-  assert.equal(titleText.includes('推荐模式') || titleText.includes('完全解放模式'), true, '标题栏必须包含当前模式微徽章')
+  assert.equal(titleText.includes('档位未知'), true, '尚未读取时必须显示档位未知')
 
   // 2. 快速卡片切换与说明
   const modeButtons = findAll(panel, n => n.type === 'button' && (textOf(n).includes('推荐') || textOf(n).includes('完全解放')))
@@ -2965,6 +2983,7 @@ function loadDockHarness(options = {}) {
   const slots = []
   const fetchLog = []
   const dispatched = []
+  const effects = [], listeners = new Map()
   let hookIndex = 0
   let aliasEntries = options.aliasEntries ?? []
   let tierValue = options.tier ?? 'recommended'
@@ -2978,7 +2997,7 @@ function loadDockHarness(options = {}) {
       const slot = slots[i]
       return [slot.value, (next) => { slot.value = typeof next === 'function' ? next(slot.value) : next }]
     },
-    useEffect() {},
+    useEffect(fn) { if (options.effects) effects.push(fn) },
     useCallback: (fn) => fn,
     useRef: (current) => {
       const i = hookIndex++
@@ -2993,10 +3012,10 @@ function loadDockHarness(options = {}) {
       innerWidth: options.viewport?.width ?? 1024,
       innerHeight: options.viewport?.height ?? 768,
       dispatchEvent(event) { dispatched.push(event?.type ?? ''); return true },
-      addEventListener() {},
+      addEventListener(type, handler) { listeners.set(type, handler) },
       removeEventListener() {},
     },
-    document: { head: null, documentElement: { lang: 'zh-CN' }, getElementById() { return null } },
+    document: { addEventListener() {}, removeEventListener() {}, head: null, documentElement: { lang: 'zh-CN' }, getElementById() { return null } },
     navigator: { language: 'zh-CN' },
     localStorage: options.localStorage ?? { getItem() { return null }, setItem() {} },
     fetch: (url, init) => {
@@ -3027,6 +3046,8 @@ function loadDockHarness(options = {}) {
     exported,
     fetchLog,
     dispatched,
+    effects,
+    listeners,
     setAlias: (entries) => { aliasEntries = entries },
     setTier: (value) => { tierValue = value },
     setTierReadFails: (value) => { tierReadFails = value },
@@ -3366,4 +3387,51 @@ test('保存在途时编辑器换成同 id 的另一次读取，迟到响应不�
   assert.equal(notice.tone, 'warn')
   assert.match(notice.title, /未受影响/)
   assert.match(notice.next, /没有被改动/)
+})
+
+
+test('关闭的 dialog 对宿主焦点环隐藏且不可交互', () => {
+  const { exported } = loadClient()
+  const tree = mount(exported.Dialog({ open: false, title: 'Closed', body: null, onClose() {} }))
+  const dialog = findAll(tree, n => n.type === 'dialog')[0]
+  assert.equal(dialog.props.hidden, true)
+  assert.equal(dialog.props.inert, '')
+})
+
+
+test('浮窗 Esc 只处理自身焦点，宿主其他弹层的 Esc 保持可用', async () => {
+  const harness = loadDockHarness({ effects: true, hooks: { 5: true } })
+  const tree = harness.render(), inside = {}, outside = {}
+  const panel = findAll(tree, node => node.props?.role === 'dialog')[0]
+  panel.props.ref.current = { contains: target => target === inside }
+  tree.props.ref.current = { contains: () => false }
+  for (const effect of harness.effects.splice(0)) effect()
+  const keydown = harness.listeners.get('keydown')
+  let stopped = 0
+  const event = target => ({ key: 'Escape', target, stopPropagation() { stopped++ }, preventDefault() {} })
+  keydown(event(outside))
+  assert.equal(stopped, 0)
+  assert.equal(findAll(harness.render(), node => node.props?.role === 'dialog').length, 1)
+  keydown(event(inside))
+  assert.equal(stopped, 1)
+  assert.equal(findAll(harness.render(), node => node.props?.role === 'dialog').length, 0)
+  await flushMicrotasks()
+})
+
+
+test('浮窗提交前词表状态变旧时明确未写入，保留草稿并重新读取', async () => {
+  const harness = loadDockHarness({ hooks: { 5: true, 7: 'SOURCE', 8: 'TARGET' } })
+  harness.exported.aliasStore.state.phase = 'ready'
+  const tree = harness.render()
+  const add = findAll(tree, node => node.type === 'button' && textOf(node) === '添加')[0]
+  assert.ok(add)
+  harness.exported.aliasStore.state.stale = true
+  add.props.onClick()
+  await flushMicrotasks()
+  assert.equal(harness.fetchLog.filter(call => call.method === 'PUT').length, 0)
+  assert.equal(harness.fetchLog.filter(call => call.path === '/breaklimit/alias').length, 1)
+  const after = harness.render()
+  assert.match(textOf(after), /本次未写入/)
+  const inputs = findAll(after, node => node.type === 'input')
+  assert.ok(inputs.some(node => node.props.value === 'SOURCE'))
 })

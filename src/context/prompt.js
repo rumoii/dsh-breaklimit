@@ -24,8 +24,14 @@ export function promptMode(mode) {
  * 从磁盘读出当前模式。所有"当前用的是哪一档"的调用点都应该用它，
  * 而不是把 home 路径交给 promptMode——那会恒回落默认档。
  */
-export function readMode(home) {
-  return promptMode(readTier(home).tier)
+export function readMode(home, runtime) {
+  const result = readTier(home, runtime)
+  if (result.source === 'unavailable') {
+    const error = new Error('档位配置不可用，已暂停操作；修复后重试。')
+    error.code = 'tier_config_unavailable'
+    throw error
+  }
+  return promptMode(result.tier)
 }
 
 /** 读该模式的附加段。 */

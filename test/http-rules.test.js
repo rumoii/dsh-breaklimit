@@ -68,6 +68,20 @@ function bodyPath(home, id) {
   return path.join(home, 'breaklimit', 'bodies', `${id}.md`)
 }
 
+test('存在但超限的正文报告未知，目录落点不能回落内置', async (t) => {
+  const { home, handler } = fixture(t, { maxInjectBytes: 4 })
+  const file = path.join(home, 'breaklimit-inject.md')
+  fs.writeFileSync(file, 'original custom prompt')
+  const response = await request(handler, 'GET', '/override')
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.data.userFileExists, true)
+  assert.equal(response.payload.data.effective.ok, false)
+  fs.unlinkSync(file)
+  fs.mkdirSync(file)
+  const directory = await request(handler, 'GET', '/override')
+  assert.equal(directory.payload.data.effective.code, 'inject_not_file')
+})
+
 /** 递归收集响应体里的所有字符串：脱敏要按「整个响应」断言，而不是只挑几个字段。 */
 function stringsIn(value, out = []) {
   if (typeof value === 'string') out.push(value)
@@ -476,4 +490,18 @@ test('status.ensure 的失败文案出网前脱敏：errno 原文不带出绝对
   assert.equal(typeof status.payload.data.ensure.error, 'string')
   assert.equal(status.payload.data.ensure.error.includes(String.raw`C:\Users`), false, 'ensure.error 不应带出盘符与用户目录')
   assertNoAbsolutePath(status.payload)
+})
+
+
+test('非法 activate 请求不能取消激活，重置结果脱敏', async (t) => {
+  const { home, handler } = fixture(t)
+  await request(handler, 'POST', '/rules/save', { id: 'a', text: 'RULE' })
+  await request(handler, 'POST', '/rules/activate', { id: 'a' })
+  for (const body of [{ id: 123 }, { id: true }, [], null]) {
+    const result = await request(handler, 'POST', '/rules/activate', body)
+    assert.equal(result.status, 400)
+  }
+  fs.writeFileSync(path.join(home, 'AGENTS.md'), 'EXTERNAL')
+  const result = await request(handler, 'POST', '/rules/reset')
+  assert.equal(JSON.stringify(result).includes(home), false)
 })

@@ -397,10 +397,10 @@ test('宿主未提供预设表时状态文本如实报不可判定，并保留�
   assert.match(text, /权限告警\s+.*新会话的审批在宿主瀑布之前就被判驳/)
 })
 
-test('档位配置损坏时状态文本报出来，并说明当前按缺省档生效', () => {
+test('档位配置损坏且没有可信快照时明确暂停', () => {
   const text = formatStatusText({ ...STATUS_BASE, tier: { ...STATUS_BASE.tier, kind: 'corrupt' } })
   assert.match(text, /档位问题\s+tier_config_corrupt/)
-  assert.match(text, /按缺省档 recommended 生效/)
+  assert.match(text, /无可信档位，相关操作已暂停/)
 })
 
 test('档位缺失时回落到默认档，不显示已移除的档名', () => {

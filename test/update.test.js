@@ -549,3 +549,22 @@ test('代理响应正常结束、中断及正文超时均释放已发布资源',
     } finally { http.request = originalHttp; https.request = originalHttps }
   }
 })
+
+
+test('更新偏好不可读时拒写且自动检查不联网', async () => {
+  const home = tempHome()
+  writeUpdateState(home, { autoCheckUpdates: false, latestVersion: '1.0.0' })
+  const file = updateStatePath(home), original = fs.readFileSync
+  fs.readFileSync = (target, ...args) => {
+    if (String(target) === file) { const error = new Error('denied'); error.code = 'EACCES'; throw error }
+    return original(target, ...args)
+  }
+  try {
+    assert.equal(readUpdateState(home).kind, 'unreadable')
+    assert.throws(() => writeUpdateState(home, { dismissedVersion: '1.0.0' }), { code: 'state_unreadable' })
+    resetPendingAuto()
+    const result = await autoCheck({ home, currentVersion: '0.9.5', check: () => assert.fail('must not connect') })
+    assert.equal(result.lastError, 'state_unreadable')
+  } finally { fs.readFileSync = original }
+  assert.equal(readUpdateState(home).state.autoCheckUpdates, false)
+})

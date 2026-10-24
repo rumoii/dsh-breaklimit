@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
 
 import { atomicWrite, hashText } from '../src/patch/fsx.js'
 import { createLock } from '../src/patch/lock.js'
@@ -581,26 +582,21 @@ test('已应用的文件被外部改动后不再继承，且如实报出', () =>
   assert.deepEqual(Object.keys(state.files), ['b.txt'])
 })
 
-test('旧快照取不到时不继承，账本不留兑现不了的承诺', () => {
-  const root = tempDir()
-  const home = tempDir()
+test('旧快照取不到时拒绝增量应用，保留旧账本和宿主内容', () => {
+  const root = tempDir(), home = tempDir()
   write(root, 'a.txt', 'A1')
   write(root, 'b.txt', 'B1')
-
-  apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }], 'T-A')])
-
-  // 把备份目录指针指向不存在的位置，等价于那份快照被 prune 掉。
-  const statePath = path.join(home, 'breaklimit', 'state.json')
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-  state.transaction = path.join(home, 'breaklimit', 'transactions', 'missing')
-  fs.writeFileSync(statePath, JSON.stringify(state), 'utf8')
-
-  const settled = { id: 'T-A', title: '测试补丁', kind: 'verify', targets: [{ path: 'a.txt', needle: 'A2', minHits: 1 }] }
-  const second = apply(root, home, [settled, replacePatch([{ path: 'b.txt', before: 'B1', after: 'B2', expectHits: 1 }], 'T-B')])
-  assert.equal(second.ok, true)
-
-  const after = JSON.parse(read(home, 'breaklimit/state.json'))
-  assert.deepEqual(Object.keys(after.files), ['b.txt'])
+  const first = [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }], 'T-A')]
+  assert.equal(apply(root, home, first).ok, true)
+  const file = path.join(home, 'breaklimit', 'state.json')
+  const previous = fs.readFileSync(file, 'utf8')
+  const state = JSON.parse(previous)
+  fs.unlinkSync(path.join(state.transaction, 'files', 'a.txt'))
+  const next = [replacePatch([{ path: 'b.txt', before: 'B1', after: 'B2', expectHits: 1 }], 'T-B')]
+  assert.equal(apply(root, home, next).ok, false)
+  assert.equal(fs.readFileSync(file, 'utf8'), previous)
+  assert.equal(read(root, 'a.txt'), 'A2')
+  assert.equal(read(root, 'b.txt'), 'B1')
 })
 
 /**
@@ -750,12 +746,15 @@ test('自定义声明集：另一档写下的内容不算已应用，按当前�
     }],
   }]
 
+  const snapshotDir = path.join(home, 'breaklimit', 'transactions', 'tx-test')
+  write(snapshotDir, 'files/a.txt', pristine)
   // 旧记录：只有应用后哈希，没有声明指纹。
   const dir = path.join(home, 'breaklimit')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
     version: 1,
     operationId: 'tx-test',
+    transaction: snapshotDir,
     phase: 'committed',
     updatedAt: '2026-01-01T00:00:00.000Z',
     files: { 'a.txt': { after: hashText(diskText) } },
@@ -902,7 +901,9 @@ test('切档重写中途失败可续做：回滚回原文后重试一次成功',
   assert.equal(read(root, 'a.txt'), 'head\nA1\ntail\n')
   assert.equal(read(root, 'b.txt'), 'head\nB2\ntail\n')
 
-  // 失败现场可续做：不先回退、不重建记录，重试一次就成功。
+  // 中断事务统一先回退，再应用；不依赖中断时的档位继续猜测。
+  assert.equal(apply(root, home, patches, { hashes }).code, 'recovery_required')
+  assert.equal(revertPatches({ root, home, lock: createLock() }).ok, true)
   const retry = apply(root, home, patches, { hashes })
   assert.equal(retry.ok, true)
   assert.equal(retry.code, 'applied')
@@ -964,4 +965,54 @@ test('prune 不清仍被 state.json 引用的事务目录，其余 rolled-back �
   assert.deepEqual(dropped.sort(), ['20260101T000002-aa', '20260101T000003-aa'])
   assert.equal(fs.existsSync(referenced), true, 'state.transaction 指着的目录不许删')
   assert.equal(fs.existsSync(orphan), false)
+})
+
+
+for (const checkpoint of ['prepared', 'a.txt', 'b.txt']) {
+  test(`旧记录切档在 ${checkpoint} 退出，先回退再应用可恢复`, () => {
+  const root = tempDir(), home = tempDir()
+  legacyUpgradeFixture(root, home, TIER_ITEMS)
+  const patches = tierSwitchPatches(TIER_ITEMS), hashes = tierSwitchHashes(TIER_ITEMS)
+  const module = new URL('../src/patch/transaction.js', import.meta.url).href
+  const fsx = new URL('../src/patch/fsx.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { applyPatches } from ${JSON.stringify(module)};
+    import { atomicWrite } from ${JSON.stringify(fsx)};
+    const rename = fs.renameSync;
+    fs.renameSync = (from,to) => {rename(from,to);if(${JSON.stringify(checkpoint)}==='prepared' && to===${JSON.stringify(path.join(home,'breaklimit','state.json'))} && JSON.parse(fs.readFileSync(to,'utf8')).phase==='pending')process.exit(23)};
+    applyPatches({root:${JSON.stringify(root)},home:${JSON.stringify(home)},patches:${JSON.stringify(patches)},hashes:${JSON.stringify(hashes)},writeFile(file,text){atomicWrite(file,text);if(${JSON.stringify(checkpoint)}!=='prepared' && file===${JSON.stringify(path.join(root,checkpoint))})process.exit(23)}});
+  `], { encoding: 'utf8' })
+  assert.equal(child.status, 23, child.stderr)
+  const old = new Date(Date.now() - 60000)
+  fs.utimesSync(path.join(home, 'breaklimit', 'operation.lock'), old, old)
+  const retry = apply(root, home, patches, { hashes })
+  assert.equal(retry.code, 'recovery_required')
+  assert.equal(revertPatches({ root, home, lock: createLock() }).ok, true)
+  for (const item of TIER_ITEMS) assert.equal(read(root, item.path), `head\n${item.before}\ntail\n`)
+  assert.equal(apply(root, home, patches, { hashes }).ok, true)
+})
+
+}
+
+test('非 UTF-8 目标整体拒写，原字节不被替换字符破坏', () => {
+  const root = tempDir(), home = tempDir()
+  const bytes = Buffer.from([0xff, 0x41])
+  fs.writeFileSync(path.join(root, 'a.txt'), bytes)
+  const patches = [replacePatch([{ path: 'a.txt', before: 'A', after: 'B', expectHits: 1 }])]
+  const result = apply(root, home, patches)
+  assert.equal(result.ok, false)
+  assert.deepEqual(fs.readFileSync(path.join(root, 'a.txt')), bytes)
+})
+
+test('快照准备后目标被外部改动时拒绝覆盖', () => {
+  const root = tempDir(), home = tempDir()
+  write(root, 'a.txt', 'A')
+  const patches = [replacePatch([{ path: 'a.txt', before: 'A', after: 'B', expectHits: 1 }])]
+  const result = apply(root, home, patches, { writeFile(file, text) {
+    atomicWrite(file, text)
+    if (file.includes(`${path.sep}files${path.sep}`)) write(root, 'a.txt', 'EXTERNAL')
+  } })
+  assert.equal(result.ok, false)
+  assert.equal(read(root, 'a.txt'), 'EXTERNAL')
 })

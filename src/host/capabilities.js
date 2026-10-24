@@ -1,3 +1,4 @@
+import { writeTier } from '../context/tiers.js'
 // 执行层预算：两档取值、运行时写入、以及实测读数。
 //
 // 写入走宿主 Loader 的公开 API——`loader.resolve(id).update({ config })`。当变更只
@@ -197,7 +198,7 @@ async function updateEntry(ctx, id, service, budgetKeys) {
  */
 let lastSubmission = null
 
-export async function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
+async function submitBudget(ctx, mode, budgets = MODE_BUDGETS) {
   const target = budgets[mode] ?? budgets.recommended
   const applied = []
   const skipped = []
@@ -270,4 +271,30 @@ export function describeLoader(ctx) {
     out.error = String(error?.message ?? error)
   }
   return out
+}
+
+
+const tierSubmissions = new WeakMap()
+
+function serializeBudget(ctx, run) {
+  const owner = ctx.root ?? ctx
+  const previous = tierSubmissions.get(owner) ?? Promise.resolve()
+  const pending = previous.catch(() => {}).then(run)
+  tierSubmissions.set(owner, pending)
+  void pending.finally(() => { if (tierSubmissions.get(owner) === pending) tierSubmissions.delete(owner) }).catch(() => {})
+  return pending
+}
+
+export function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
+  return serializeBudget(ctx, () => submitBudget(ctx, mode, budgets))
+}
+
+/** 档位持久化与预算提交串行完成；结果不等同于预算已生效。 */
+export function switchTier(ctx, home, tier, budgets = MODE_BUDGETS) {
+  return serializeBudget(ctx, async () => {
+    writeTier(home, tier)
+    const budget = await submitBudget(ctx, tier, budgets)
+    const failures = budget.skipped.filter(reason => !reason.endsWith('条目已禁用'))
+    return { tier, budget, verified: failures.length === 0 && budget.mismatched.length === 0 && budget.unverified.length === 0 }
+  })
 }

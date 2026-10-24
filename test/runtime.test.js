@@ -119,13 +119,13 @@ test('档位读不到与真的只读分开报告', () => {
   assert.deepEqual(ok, { available: true, mode: 'danger-full-access', error: null })
 })
 
-test('readMode 从磁盘读出模式，读不到或损坏时回落默认', () => {
+test('readMode 缺文件用默认，损坏且无可信快照时拒绝操作', () => {
   const home = tempHome()
   assert.equal(readMode(home), 'recommended', '无配置文件')
   const file = path.join(home, 'breaklimit', 'tier.json')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, '{ broken', 'utf8')
-  assert.equal(readMode(home), 'recommended', '损坏的配置')
+  assert.throws(() => readMode(home), { code: 'tier_config_unavailable' })
   fs.writeFileSync(file, JSON.stringify({ tier: 'unrestricted' }), 'utf8')
   assert.equal(readMode(home), 'unrestricted')
 })

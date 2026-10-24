@@ -76,3 +76,16 @@ test('坏文件不静默当成空表：报错并保留空列表', () => {
   assert.deepEqual(read.entries, [])
   assert.equal(typeof read.error, 'string')
 })
+
+
+test('词表不可读可用同实例快照但必须报告错误，冷实例没有可信词表', () => {
+  const home = tempHome(), runtime = {}
+  writeMasks(home, [{ from: 'REAL', to: 'ALIAS' }])
+  readMasks(home, runtime)
+  fs.writeFileSync(masksPath(home), '{broken')
+  const cached = readMasks(home, runtime)
+  assert.equal(cached.entries[0]?.to, 'ALIAS')
+  assert.equal(cached.source, 'cached')
+  assert.ok(cached.error)
+  assert.equal(readMasks(home, {}).unavailable, true)
+})

@@ -8,7 +8,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { EventEmitter } from 'node:events'
 
-import { MODE_BUDGETS } from '../src/host/capabilities.js'
+import { MODE_BUDGETS, switchTier } from '../src/host/capabilities.js'
 import { registerCommands } from '../src/host/commands.js'
 import { createHandler } from '../src/serve/http.js'
 
@@ -26,6 +26,23 @@ const CUSTOM_BUDGETS = Object.freeze({
     maxOutputBytes: 222222,
     maxDepth: 7,
   }),
+})
+
+test('切档命令等待预算更新，并报告提交未确认而非完全成功', async (t) => {
+  const { ctx } = fixture(t, 'bkl-cap-tier-wait-')
+  let release
+  const barrier = new Promise(resolve => { release = resolve })
+  for (const entry of ctx.root.loader.entries()) entry.update = async () => { await barrier; throw new Error('failure') }
+  const commands = []
+  ctx.inject = (_deps, fn) => fn({ commands: { register: command => commands.push(command) } })
+  registerCommands(ctx, {}, {})
+  let finished = false
+  const pending = Promise.resolve(commands[0].handler({ rawInput: 'tier unrestricted' })).then(result => { finished = true; return result })
+  await Promise.resolve()
+  assert.equal(finished, false)
+  release()
+  const result = await pending
+  assert.match(result.text, /未确认|部分|失败/)
 })
 
 function fixture(t, prefix) {
@@ -58,12 +75,16 @@ function fixture(t, prefix) {
         entries: () => entries,
       },
     },
-    get() { return undefined },
+    get(name) {
+      const id = name === 'shell' ? 'pwsh-sandbox' : 'subagent'
+      const config = calls.findLast(call => name === 'shell' ? /sandbox$/.test(call.id) : call.id.endsWith(`:${id}`))?.options.config
+      return config ? { config: Object.fromEntries(Object.entries(config).map(([key, value]) => [key, { get: () => value }])) } : undefined
+    },
   }
   return { home, ctx, calls }
 }
 
-/** 命令入口的 applyModeBudget 是 void 提交，等它跑完再断言。 */
+/** 等待当前微任务之后的观察。 */
 async function flushSubmissions() {
   await new Promise((resolve) => setImmediate(resolve))
 }
@@ -101,7 +122,7 @@ test('命令入口切档：提交的预算是 config.budgets 覆盖值，不是�
   }
   registerCommands(ctx, { budgets: CUSTOM_BUDGETS }, { enabled: true, counters: {} })
 
-  const result = commands.get('breaklimit').handler({ rawInput: 'tier unrestricted' })
+  const result = await commands.get('breaklimit').handler({ rawInput: 'tier unrestricted' })
   assert.equal(result.kind, 'success')
   await flushSubmissions()
 
@@ -145,4 +166,26 @@ test('POST /tier 切档：提交的预算是 config.budgets 覆盖值，不是�
   assert.deepEqual(submitted['include:host:subagent'], { maxDepth: want.maxDepth })
   assert.notEqual(submitted['include:host:subagent'].maxDepth, MODE_BUDGETS.unrestricted.maxDepth)
   assert.notEqual(submitted['include:host:subagent'].maxDepth, CUSTOM_BUDGETS.recommended.maxDepth)
+})
+
+
+test('并发切档按提交顺序完成，不会交错持久化与预算写入', async (t) => {
+  const { home, ctx, calls } = fixture(t, 'bkl-cap-tier-queue-')
+  let entered, release
+  const start = new Promise(resolve => { entered = resolve })
+  const hold = new Promise(resolve => { release = resolve })
+  const firstEntry = ctx.root.loader.entries()[0], update = firstEntry.update
+  let once = true
+  firstEntry.update = async options => {
+    if (once) { once = false; entered(); await hold }
+    return update(options)
+  }
+  const first = switchTier(ctx, home, 'unrestricted', CUSTOM_BUDGETS)
+  await start
+  const second = switchTier(ctx, home, 'recommended', CUSTOM_BUDGETS)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'breaklimit', 'tier.json'), 'utf8')).tier, 'unrestricted')
+  release()
+  await Promise.all([first, second])
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'breaklimit', 'tier.json'), 'utf8')).tier, 'recommended')
+  assert.deepEqual(calls.map(call => call.options.config.maxDepth ?? call.options.config.timeoutMs), [2222000,2222000,7,1111000,1111000,1])
 })

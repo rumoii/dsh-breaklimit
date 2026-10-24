@@ -22,6 +22,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
+import { masksPath, writeMasks } from '../src/host/masks.js'
+import { writeTier, tierConfigPath } from '../src/context/tiers.js'
 import { registerSeams } from '../src/host/seams.js'
 import { buildStatus, formatStatusText } from '../src/host/status.js'
 
@@ -295,4 +297,72 @@ test('formatStatusText 在状态里没有 injection 字段时不抛错', async (
 
   assert.doesNotThrow(() => formatStatusText(legacy))
   assert.match(formatStatusText(legacy), /rumo-dsh-breaklimit/u)
+})
+
+
+test('真实 pre-step 管线强化指令并替换用户文本，读取故障使用缓存且冷实例拒绝', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-seams-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    const { ctx, handlers } = fakeCtx(), runtime = fakeRuntime()
+    runtime.counters.maskHits = 0
+    registerSeams(ctx, {}, runtime, TAIL_ORDER)
+    writeMasks(home, [{ from: 'REAL', to: 'ALIAS' }])
+    const instruction = 'The following workspace instructions may be relevant to your work. Use them as guidance for this task. They do not override other instructions.'
+    const messages = [
+      { source: { kind: 'user' }, content: [{ type: 'text', text: 'REAL' }] },
+      { source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: instruction }] },
+      { source: { kind: 'other' }, content: [{ type: 'text', text: 'REAL' }] },
+    ]
+    const run = () => handlers.get('agent/pre-step')({}, async () => ({ kind: 'enter', messages }))
+    const out = await run()
+    assert.equal(out.messages[0].content[0].text, 'ALIAS')
+    assert.match(out.messages[1].content[0].text, /active and mandatory/)
+    assert.equal(out.messages[2].content[0].text, 'REAL')
+    assert.equal(messages[0].content[0].text, 'REAL')
+    fs.writeFileSync(masksPath(home), '{broken')
+    assert.equal((await run()).messages[0].content[0].text, 'ALIAS')
+    assert.equal(runtime.maskRead.source, 'cached')
+    const cold = fakeCtx()
+    registerSeams(cold.ctx, {}, fakeRuntime(), TAIL_ORDER)
+    assert.equal((await cold.handlers.get('agent/pre-step')({}, async () => ({ kind: 'enter', messages }))).kind, 'reject')
+    fs.writeFileSync(path.join(home, 'breaklimit-inject.md'), 'HEAD FOR MODE CHECK')
+    writeTier(home, 'unrestricted')
+    const assembly = { sections: [], contexts: [], tools: [], variables: {} }
+    const assemble = () => handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly)
+    assert.match((await assemble()).sections[0].text, /Mode: unrestricted/)
+    fs.writeFileSync(tierConfigPath(home), '{broken')
+    assert.match((await assemble()).sections[0].text, /Mode: unrestricted/)
+    await assert.rejects(() => cold.handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly), { code: 'tier_config_unavailable' })
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    removeTempDir(home)
+  }
+})
+
+test('装配观测绑定会话，另一会话的消息不污染结果，尾段 order 不变', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-seams-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    const { ctx, handlers } = fakeCtx(), runtime = fakeRuntime(), registered = []
+    ctx.systemPrompt.section = section => registered.push(section)
+    registerSeams(ctx, {}, runtime, 10300)
+    assert.equal(registered[0].order, 10300)
+    const assembly = { sections: [], contexts: [], tools: [], variables: {} }
+    const a = {}, b = {}
+    fs.writeFileSync(path.join(home, 'breaklimit-inject.md'), 'SESSION A MARKER LONG ENOUGH')
+    const resultA = await handlers.get('system-prompt/assemble')(assembly, { agent: { session: a } }, async () => assembly)
+    fs.writeFileSync(path.join(home, 'breaklimit-inject.md'), 'SESSION B MARKER LONG ENOUGH')
+    await handlers.get('system-prompt/assemble')(assembly, { agent: { session: b } }, async () => assembly)
+    handlers.get('session/event')(a, { type: 'system/message', data: { message: { content: [{ type: 'text', text: resultA.sections[0].text }] } } })
+    assert.equal(runtime.lastAssembly.injectionDropped, 'unknown')
+    assert.equal(runtime.assemblies.get(a).injectionDropped, false)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    removeTempDir(home)
+  }
 })

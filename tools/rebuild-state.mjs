@@ -33,7 +33,7 @@ import process from 'node:process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { hashText, readTextOrNull, atomicWrite } from '../src/patch/fsx.js'
-import { resolveHome, statePath, transactionDir, transactionsDir, writeState } from '../src/patch/state.js'
+import { STATE_VERSION, resolveHome, statePath, transactionDir, transactionsDir, writeState } from '../src/patch/state.js'
 import { revertSnippets } from '../src/patch/preflight.js'
 import { DSH_TARGET, PATCHES, replaceVariantsByPath } from '../src/patch/index.js'
 import { loadPatchHashes } from '../src/patch/hashes.js'
@@ -243,7 +243,7 @@ function rebuildStateLocked({
     }
 
     writeState(home, {
-      version: 1,
+      version: STATE_VERSION,
       operationId,
       phase: 'committed',
       updatedAt: new Date().toISOString(),

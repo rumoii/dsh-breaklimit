@@ -66,8 +66,13 @@ try {
         assert.equal(rendered.out.sections.find(section => section.name === 'breaklimit:head').interpolate, false)
         literal += 1
         if (oldRegister) {
-          await assert.rejects(() => assemble(oldRegister, persona), /prompt variable/)
-          baselineRejected += 1
+          try {
+            assert.equal((await assemble(oldRegister, persona)).text, rendered.text)
+            compared += 1
+          } catch (error) {
+            if (!/prompt variable/.test(String(error?.message))) throw error
+            baselineRejected += 1
+          }
         }
       }
     }

@@ -14,6 +14,8 @@ import { spawnSync } from 'node:child_process'
 import {
   activateRule,
   deactivateRule,
+  deleteRule,
+  resetRules,
   ensureInitialState,
   landingPath,
   readActive,
@@ -364,4 +366,32 @@ test('收尾记录与清单不一致：写入口挡下并指路，取消激活�
   const cleared = deactivateRule(home)
   assert.equal(cleared.ok, true)
   assert.equal(readIndex(home).pendingActivation, null)
+})
+
+
+for (const [name, operation] of [['deactivate', deactivateRule], ['delete', home => deleteRule(home, 'alpha')], ['reset', resetRules]]) {
+  test(`${name} 清单写失败后快照保留，重试收敛`, () => {
+    const home = tempHome()
+    seedTarget(home, 'AGENTS.md', 'ORIGINAL')
+    saveRule(home, 'alpha', 'RULE', { target: 'AGENTS.md' })
+    activateRule(home, 'alpha')
+    const restore = failIndexRenameOnce(home)
+    try { assert.equal(operation(home).ok, false) } finally { restore() }
+    assert.equal(fs.readFileSync(landingPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+    assert.equal(operation(home).ok, true)
+    assert.equal(readIndex(home).active, null)
+    assert.equal(fs.readFileSync(targetPath(home, 'AGENTS.md'), 'utf8'), 'ORIGINAL')
+  })
+}
+
+test('只改 name 保留原 target，重置后重新加载不重新导入', () => {
+  const home = tempHome()
+  seedTarget(home, 'CLAUDE.md', 'ORIGINAL')
+  saveRule(home, 'alpha', 'RULE', { target: 'CLAUDE.md' })
+  saveRule(home, 'alpha', 'RULE', { name: 'renamed', target: undefined })
+  assert.equal(readIndex(home).rules[0].target, 'CLAUDE.md')
+  activateRule(home, 'alpha')
+  assert.equal(resetRules(home).ok, true)
+  assert.equal(ensureInitialState(home).imported, null)
+  assert.equal(readIndex(home).active, null)
 })

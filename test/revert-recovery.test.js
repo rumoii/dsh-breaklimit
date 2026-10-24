@@ -17,6 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
 
 import { atomicWrite, hashText } from '../src/patch/fsx.js'
 import { createLock } from '../src/patch/lock.js'
@@ -124,7 +125,7 @@ test('失败补偿返回但未恢复内容时如实报告，并保留重试所�
   assert.equal(apply(root, home, patches).ok, true)
   const result = revertPatches({ root, home, writeFile(file, content) {
     if (file === path.join(root, 'b.txt')) throw new Error('simulated revert failure')
-    if (file === path.join(root, 'a.txt') && content === 'A2\n') return
+    if (file === path.join(root, 'a.txt') && String(content) === 'A2\n') return
     atomicWrite(file, content)
   } })
   assert.equal(result.ok, false)
@@ -254,7 +255,7 @@ test('补偿失败时报出 recoveryErrors，restored 只含真正恢复成功�
   const bFile = path.join(root, 'b.txt')
   const { writeFile } = tracingWrites(root, (file, content) => {
     if (file === aFile) return new Error('模拟恢复失败')
-    if (file === bFile && content === 'B2\n') return new Error('模拟补偿失败')
+    if (file === bFile && String(content) === 'B2\n') return new Error('模拟补偿失败')
     return null
   })
 
@@ -317,4 +318,84 @@ test('备份写盘失败时返回 revert_failed，目标与记录都原样不动
   assert.equal(retry.code, 'reverted')
   assert.equal(read(root, 'a.txt'), 'A1\n')
   assert.equal(read(root, 'b.txt'), 'B1\n')
+})
+
+
+test('回退备份阶段读不到目标时整体拒绝，不能用空串充当恢复副本', () => {
+  const root = tempDir(), home = tempDir()
+  write(root, 'a.txt', 'A1')
+  assert.equal(apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }])]).ok, true)
+  const file = path.join(root, 'a.txt'), original = fs.readFileSync
+  let reads = 0
+  fs.readFileSync = (target, ...args) => {
+    if (String(target) === file && ++reads === 2) { const error = new Error('backup read denied'); error.code = 'EACCES'; throw error }
+    return original(target, ...args)
+  }
+  let result
+  try { result = revertPatches({ root, home }) } finally { fs.readFileSync = original }
+  assert.equal(result.code, 'revert_failed')
+  assert.equal(read(root, 'a.txt'), 'A2')
+  assert.equal(readState(home).state.phase, 'committed')
+  assert.equal(revertPatches({ root, home }).ok, true)
+})
+
+test('UTF-8 BOM 与多字节正文应用回退后逐字节一致，账本写 v2', () => {
+  const root = tempDir(), home = tempDir()
+  const bytes = Buffer.from('\ufeff中文 A1\r\n', 'utf8')
+  fs.writeFileSync(path.join(root, 'a.txt'), bytes)
+  assert.equal(apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }])]).ok, true)
+  assert.equal(readState(home).state.version, 2)
+  assert.equal(revertPatches({ root, home }).ok, true)
+  assert.deepEqual(fs.readFileSync(path.join(root, 'a.txt')), bytes)
+})
+
+for (const change of [state => { state.files['../outside'] = { before: 'a', after: 'b' } }, state => { state.files['a.txt'] = null }, state => { state.transaction = 123 }]) {
+  test('非法账本拒绝回退并保护原文件', () => {
+    const root = tempDir(), home = tempDir()
+    write(root, 'a.txt', 'A1')
+    apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }])])
+    const state = readState(home).state
+    change(state)
+    fs.writeFileSync(statePath(home), JSON.stringify(state))
+    assert.equal(revertPatches({ root, home }).code, 'state_corrupt')
+    assert.equal(read(root, 'a.txt'), 'A2')
+  })
+}
+
+
+test('读取 v1 记录后回退失败，新恢复进度必须用 v2 保留', () => {
+  const root = tempDir(), home = tempDir()
+  write(root, 'a.txt', 'A1')
+  apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }])])
+  const old = readState(home).state
+  old.version = 1
+  fs.writeFileSync(statePath(home), JSON.stringify(old))
+  const result = revertPatches({ root, home, writeFile(file, content) {
+    if (file === path.join(root, 'a.txt')) throw new Error('interrupted revert')
+    atomicWrite(file, content)
+  } })
+  assert.equal(result.code, 'revert_failed')
+  assert.equal(readState(home).state.version, 2)
+  assert.equal(revertPatches({ root, home }).ok, true)
+})
+
+
+test('真实回退子进程写回首个目标后退出，重试按磁盘续做', () => {
+  const root = tempDir(), home = tempDir()
+  write(root, 'a.txt', 'A1'); write(root, 'b.txt', 'B1')
+  apply(root, home, [replacePatch([{ path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 }, { path: 'b.txt', before: 'B1', after: 'B2', expectHits: 1 }])])
+  const transaction = new URL('../src/patch/transaction.js', import.meta.url).href
+  const fsx = new URL('../src/patch/fsx.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { revertPatches } from ${JSON.stringify(transaction)};
+    import { atomicWrite } from ${JSON.stringify(fsx)};
+    revertPatches({root:${JSON.stringify(root)},home:${JSON.stringify(home)},writeFile(file,bytes){atomicWrite(file,bytes);if(file===${JSON.stringify(path.join(root,'a.txt'))})process.exit(24)}});
+  `], { encoding: 'utf8' })
+  assert.equal(child.status, 24, child.stderr)
+  const expired = new Date(Date.now()-60000)
+  fs.utimesSync(path.join(home,'breaklimit','operation.lock'),expired,expired)
+  assert.equal(read(root,'a.txt'),'A1')
+  assert.equal(read(root,'b.txt'),'B2')
+  assert.equal(revertPatches({root,home}).ok,true)
+  assert.equal(read(root,'b.txt'),'B1')
 })

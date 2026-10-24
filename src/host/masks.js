@@ -9,7 +9,7 @@
 //   3. 存储与索引分开是过度设计——词表很小，一个文件装得下。
 import path from 'node:path'
 import { breaklimitDir } from '../patch/state.js'
-import { atomicWrite, readTextOrNull } from '../patch/fsx.js'
+import { atomicWrite, decodeUtf8, readBytesStrict } from '../patch/fsx.js'
 
 export const MASKS_FILE = 'masks.json'
 export const MAX_MASKS = 100
@@ -57,18 +57,30 @@ export function normalizeEntries(entries) {
  * @returns {{ entries: Array<{from: string, to: string}>, error: string | null }}
  *   文件不存在是正常状态，不是错误。
  */
-export function readMasks(home) {
+export function readMasks(home, runtime) {
   const file = masksPath(home)
-  const text = readTextOrNull(file)
-  if (text === null) return { entries: [], error: null }
-  try {
-    const parsed = JSON.parse(text)
-    const raw = Array.isArray(parsed) ? parsed : parsed?.entries
-    return { entries: normalizeEntries(raw), error: null }
-  } catch {
-    // 内容坏了不能当成空表悄悄放过去：用户以为还有效，实际一条都没在跑。
-    return { entries: [], error: '词表文件不是合法 JSON，已按空表处理。' }
+  const read = readBytesStrict(file)
+  let result
+  if (read.kind === 'missing') result = { entries: [], error: null }
+  else if (read.kind === 'unreadable') result = { entries: [], error: '词表文件读不到，未按空表处理。' }
+  else {
+    try {
+      const parsed = JSON.parse(decodeUtf8(read.bytes))
+      const raw = Array.isArray(parsed) ? parsed : parsed?.entries
+      if (!Array.isArray(raw) || raw.length > MAX_MASKS || raw.some(entry => !validEntry(entry))) throw new Error('invalid entries')
+      result = { entries: normalizeEntries(raw), error: null }
+    } catch {
+      result = { entries: [], error: '词表文件不是合法 JSON 或词条无效，未按空表处理。' }
+    }
   }
+  if (result.error === null) {
+    if (runtime) runtime.maskSnapshot = { file, entries: result.entries }
+    return result
+  }
+  const cached = runtime?.maskSnapshot
+  return cached?.file === file
+    ? { ...result, entries: cached.entries, source: 'cached', unavailable: false }
+    : { ...result, source: 'unavailable', unavailable: true }
 }
 
 /** 写词表。返回结构化结果，不吞失败。 */

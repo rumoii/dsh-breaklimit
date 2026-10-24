@@ -52,7 +52,11 @@ export function apply(ctx, config = {}) {
 
   // 执行层预算随模式提交：走 Loader 的 volatile 提交，条件不成立时会退回静态基线。
   // 预算值来自配置里的 budgets，缺省用内置两档。
-  void applyModeBudget(ctx, readMode(resolveHome()), resolveBudgets(config))
+  try {
+    void applyModeBudget(ctx, readMode(resolveHome(), runtime), resolveBudgets(config))
+  } catch (error) {
+    runtime.configError = error.code ?? 'tier_config_unavailable'
+  }
 
   registerSeams(ctx, config, runtime, order)
   registerCommands(ctx, config, runtime)

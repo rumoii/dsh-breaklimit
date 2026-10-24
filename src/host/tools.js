@@ -40,7 +40,7 @@ export function registerTools(ctx, config, runtime) {
         const root = resolveHostRoot(config)
         if (root === null) return '未配置宿主根，无法执行。设置 hostRoot 或 DSH_BREAKLIMIT_HOST_ROOT。'
         const home = resolveHome()
-        const result = applySelectedPatches({ root, home, mode: readMode(resolveHome()) })
+        const result = applySelectedPatches({ root, home, mode: readMode(resolveHome(), runtime) })
         return formatOperationText(result)
       },
     })

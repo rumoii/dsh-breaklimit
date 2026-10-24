@@ -98,13 +98,25 @@ test('resolveTierInfo 返回模式、字节数与可用列表', () => {
   assert.match(info.text, /No pre-emptive restraint/u)
 })
 
-test('配置损坏时正文仍按默认模式拼装，并把损坏带出来', () => {
+test('配置损坏时带出不可用状态，候选正文不代表生效', () => {
   const home = tempHome()
   const confPath = tierConfigPath(home)
   fs.mkdirSync(path.dirname(confPath), { recursive: true })
   fs.writeFileSync(confPath, '{ corrupt json !!!', 'utf8')
   const info = resolveTierInfo(home, SAMPLE_BASE, '')
   assert.equal(info.kind, 'corrupt')
+  assert.equal(info.source, 'unavailable')
   assert.equal(info.tier, DEFAULT_TIER)
   assert.equal(info.text, SAMPLE_BASE)
+})
+
+
+test('档位读失败沿用同实例可信快照，其他实例不能借用', () => {
+  const home = tempHome(), runtime = {}
+  writeTier(home, 'unrestricted')
+  assert.equal(readTier(home, runtime).tier, 'unrestricted')
+  fs.writeFileSync(tierConfigPath(home), '{broken')
+  assert.equal(readTier(home, runtime).tier, 'unrestricted')
+  assert.equal(readTier(home, runtime).source, 'cached')
+  assert.notEqual(readTier(home, {}).source, 'cached')
 })
