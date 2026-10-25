@@ -614,8 +614,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     "@media (prefers-reduced-motion: reduce) { .bkl-root *, .bkl-root *::before, .bkl-root *::after { animation: none !important; transition: none !important; } }",
 
     // ---- 阶段三样式 --------------------------------------------------------
-    // 4 阶段进度流
-    ".bkl-root .bkl-flow { list-style: none; margin: 0 0 24px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }",
+    // 三阶段进度流
+    ".bkl-root .bkl-flow { list-style: none; margin: 0 0 24px; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }",
     ".bkl-root .bkl-flow li { --tone: var(--dsw-alias-border-l2); padding: 10px 12px 0; border-top: 3px solid var(--tone); display: flex; gap: 9px; align-items: flex-start; min-width: 0; }",
     ".bkl-root .bkl-flow .bkl-flow-num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: none; border: 1px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-1); }",
     ".bkl-root .bkl-flow .bkl-flow-num svg { width: 13px; height: 13px; stroke-width: 2.4; }",
@@ -631,28 +631,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-flow li.blocked strong, .bkl-root .bkl-flow li.blocked span.bkl-sub { color: var(--dsw-alias-state-error-primary); }",
     ".bkl-root .bkl-flow li.todo { --tone: var(--dsw-alias-border-l2); }",
     ".bkl-root .bkl-flow li.todo strong { color: var(--dsw-alias-label-tertiary); }",
-    "@media (max-width: 640px) { .bkl-root .bkl-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }",
+    "@media (max-width: 640px) { .bkl-root .bkl-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; } .bkl-root .bkl-flow li { padding: 8px 5px; } .bkl-root .bkl-flow span.bkl-sub { display: none; } }",
 
     // 响应式双栏网格
     ".bkl-root .bkl-columns { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 24px; align-items: start; }",
     "@media (max-width: 840px) { .bkl-root .bkl-columns { grid-template-columns: minmax(0, 1fr); } }",
-
-    // 三步引导（Guide）：展开态进度 + 步骤行；关闭态是 link 按钮，无需样式。
-    ".bkl-root .bkl-guide { padding: 4px 20px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }",
-    ".bkl-root .bkl-guide-title { padding: 14px 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }",
-    ".bkl-root .bkl-guide-title h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
-    ".bkl-root .bkl-guide-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }",
-    ".bkl-root .bkl-guide-bar { width: 72px; height: 5px; border-radius: 5px; background: var(--dsw-alias-bg-layer-3); overflow: hidden; }",
-    ".bkl-root .bkl-guide-bar span { display: block; height: 100%; background: var(--dsw-alias-state-success-primary); border-radius: 5px; }",
-    ".bkl-root .bkl-guide-item { display: flex; align-items: flex-start; gap: 12px; padding: 14px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }",
-    ".bkl-root .bkl-guide-item.is-current { margin: 0 -20px; padding-inline: 20px; background: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); border-top-color: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); }",
-    ".bkl-root .bkl-step-num { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--dsw-alias-border-l4); border-radius: 50%; font-size: 11px; font-weight: 700; flex: none; margin-top: 1px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-1); }",
-    ".bkl-root .bkl-step-num svg { width: 13px; height: 13px; }",
-    ".bkl-root .bkl-step-num.done { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-bg-layer-1); }",
-    ".bkl-root .bkl-step-num.current { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }",
-    ".bkl-root .bkl-guide-item strong { display: block; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }",
-    ".bkl-root .bkl-guide-item p { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin: 2px 0 0; }",
-    ".bkl-root .bkl-guide-item .bkl-btn-link { margin-left: auto; flex: none; align-self: center; font-size: 12px; }",
+    "@media (max-width: 720px) { .bkl-root .bkl-page-head { flex-wrap: wrap; } .bkl-root .bkl-page-head-text { flex-basis: 100%; } }",
 
     // 主行动卡片
     ".bkl-root .bkl-action-card { --tone: var(--dsw-alias-state-business-primary); --toneSoft: var(--dsw-alias-state-business-tertiary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)); --toneLine: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); padding: 24px 26px; border: 1px solid var(--toneLine); border-radius: var(--dsw-radius-lg, 12px); position: relative; overflow: hidden; background: linear-gradient(160deg, var(--toneSoft), var(--dsw-alias-bg-layer-1) 62%); }",
@@ -693,12 +677,21 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     ".bkl-root .bkl-patch-icon { padding: 8px; border-radius: var(--dsw-radius-md, 8px); background: var(--dsw-alias-bg-layer-2); border: 0.5px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }",
     ".bkl-root .bkl-patch-row.selected .bkl-patch-icon { color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-bg-layer-1); border-color: var(--dsw-alias-state-business-secondary, color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent)); }",
 
-    // 悬浮固定底部操作栏
-    ".bkl-root .bkl-sticky-footer { position: sticky; bottom: 0; z-index: 10; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; background: var(--dsw-alias-bg-layer-1); border-top: 0.5px solid var(--dsw-alias-border-l2); box-shadow: 0 -8px 20px -12px color-mix(in srgb, #000 25%, transparent); margin-top: 24px; border-radius: 0 0 var(--dsw-radius-md, 8px) var(--dsw-radius-md, 8px); }",
+    ".bkl-root .bkl-patch-selection { color: var(--dsw-alias-label-secondary); font-weight: 600; }",
+    ".bkl-root .bkl-patch-selection.selected { color: var(--dsw-alias-state-business-primary); }",
+
+    // 吸底操作栏与独立恢复区
+    ".bkl-root .bkl-sticky-footer { position: sticky; bottom: 12px; z-index: 10; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; background: var(--dsw-alias-bg-layer-1); border: 0.5px solid var(--dsw-alias-border-l3); box-shadow: 0 8px 24px -12px color-mix(in srgb, #000 30%, transparent); margin-top: 24px; border-radius: var(--dsw-radius-md, 8px); }",
     ".bkl-root .bkl-foot-copy { flex: 1 1 180px; min-width: 180px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }",
     ".bkl-root .bkl-foot-copy strong { display: block; color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 600; }",
     ".bkl-root .bkl-foot-copy.blocked strong { color: var(--dsw-alias-state-error-primary); }",
     ".bkl-root .bkl-foot-reason { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin-top: 2px; }",
+    ".bkl-root .bkl-maintenance { margin-top: 22px; border-top: 0.5px solid var(--dsw-alias-border-l2); padding-top: 16px; }",
+    ".bkl-root .bkl-maintenance > summary { cursor: pointer; color: var(--dsw-alias-label-secondary); font-weight: 600; }",
+    ".bkl-root .bkl-maintenance-body { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 14px; padding: 14px; border: 0.5px solid var(--dsw-alias-state-error-secondary); border-radius: var(--dsw-radius-md); }",
+    ".bkl-root .bkl-maintenance-body > div { flex: 1 1 220px; }",
+    ".bkl-root .bkl-maintenance-body strong { color: var(--dsw-alias-state-error-primary); }",
+    ".bkl-root .bkl-maintenance-body p { margin: 3px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; }",
 
     // 补丁分界标题与折叠清单
     ".bkl-root .bkl-section-label { font-size: 13px; color: var(--dsw-alias-label-primary); font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }",
@@ -755,15 +748,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       lead: "调宽宿主过紧的限制、切换提示词档位、管理写给模型的长期规则。",
       tabsLabel: "破限设置",
       tabOverview: "概览",
-      tabPatches: "补丁",
+      tabPatches: "自定义补丁",
       tabPrompt: "提示词",
       tabRules: "规则",
       tabWords: "词库",
       // 每页顶部：标题、一句说明、生效时机。生效标签在标题旁，回答「我改完什么时候有用」。
       pageOverviewTitle: "从这里开始",
-      pageOverviewDesc: "先看当前状态，再完成需要做的那一步。",
-      pagePatchesTitle: "选择你需要的改动",
-      pagePatchesDesc: "先挑选，再统一应用。关闭开关会保留已写入的源码改动。",
+      pageOverviewDesc: "推荐路径已经选好，你只需要确认并应用。",
+      pagePatchesTitle: "自定义补丁",
+      pagePatchesDesc: "开关只决定下次应用包含什么；统一应用后才会修改宿主源码。",
       pagePromptTitle: "让模型按你的方式协作",
       pagePromptDesc: "选择附加指令模式，或编辑两档共用的正文。",
       pageRulesTitle: "管理长期规则",
@@ -1332,30 +1325,26 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       termInstructions: "指令文件",
       tipInstructions: "模型每次对话开始时读取的约定文件，例如 AGENTS.md、CLAUDE.md。",
 
-      // 阶段三组件与模型：4 阶段进度流
-      flowStep1Title: "配置宿主目录",
-      flowStep1Done: "已找到宿主源码",
-      flowStep1Current: "告诉插件源码在哪",
-      flowStep2Title: "选择补丁",
-      flowStep2Done: (n) => `已选 ${String(n)} 条`,
-      flowStep2Current: "还没有选择",
-      flowStep2Todo: "配置目录后进行",
-      flowStep3Title: "检查并应用",
-      flowStep3Blocked: "预检未通过，未写入",
-      flowStep3Revert: "已回退源码",
-      flowStep3Done: "已写入磁盘",
-      flowStep3Current: (n) => `待写入 ${String(n)} 个文件`,
-      flowStep3Todo: "选好补丁后进行",
-      flowStep4Title: "重启宿主",
-      flowStep4Current: "等你按原方式重启",
-      flowStep4Done: "已完成",
-      flowStep4Todo: "应用后进行",
+      // 概览只保留一套三阶段流程：选择、应用、重启。
+      flowStep1Title: "选择方案",
+      flowStep1Done: (n) => `已选 ${String(n)} 条`,
+      flowStep1Current: "先完成方案选择",
+      flowStep2Title: "检查并应用",
+      flowStep2Blocked: "预检未通过，未写入",
+      flowStep2Revert: "已回退源码",
+      flowStep2Done: "已写入磁盘",
+      flowStep2Current: (n) => `待写入 ${String(n)} 个文件`,
+      flowStep2Todo: "选好方案后进行",
+      flowStep3Title: "重启宿主",
+      flowStep3Current: "等你按原方式重启",
+      flowStep3Done: "已完成",
+      flowStep3Todo: "应用后进行",
 
       // 阶段三：主行动卡片
       actionCardLabelUrgent: "需要先处理",
       actionCardLabelNextRoot: "下一步 · 配置环境",
       actionCardLabelRestart: "还差一步 · 重启宿主",
-      actionCardLabelNextApply: "下一步 · 应用补丁",
+      actionCardLabelNextApply: "推荐方案",
       actionCardLabelOptional: "按需选择",
       actionCardLabelPass: "磁盘检查通过",
       actionCardRulesCorruptTitle: "规则清单读不出来",
@@ -1373,9 +1362,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       actionCardRestartApplyTitle: "补丁已写入，接下来重启宿主",
       actionCardRestartBody: "磁盘内容已经更新，正在运行的宿主可能仍在使用旧代码。刷新网页不会重启宿主。",
       actionCardRestartBtn: "查看重启步骤",
-      actionCardPendingTitle: "把选好的改动应用到宿主",
-      actionCardPendingBody: (enabled, pending) => `已选择 ${String(enabled)} 条补丁，预检通过。应用前，你可以逐项查看用途与将修改的 ${String(pending)} 个文件。`,
-      actionCardPendingBtn: "查看并应用补丁",
+      actionCardPendingTitle: "推荐破限方案",
+      actionCardCustomTitle: "自定义破限方案",
+      actionCardLabelCustom: "自定义方案",
+      actionCardPendingBody: (enabled, pending) => `已选 ${String(enabled)} 条补丁和当前提示词模式，预检通过。下一步将写入 ${String(pending)} 个文件，应用后需要重启宿主。`,
+      actionCardPendingBtn: "检查并应用推荐方案",
+      actionCardCustomBtn: "检查并应用所选方案",
       actionCardNoneTitle: "当前没有选择补丁",
       actionCardNoneBody: "你仍可管理提示词与规则。补丁开关关闭后，之前已经写入的源码改动会保留，撤销请用回退。",
       actionCardNoneBtn: "去挑选补丁",
@@ -1404,6 +1396,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
       // 阶段三：概览与补丁扩展
       overviewFlowLabel: "补丁生效进度",
+      overviewCurrentTitle: "当前破限配置",
+      overviewCurrentDesc: "推荐配置已就位，日常调整从这里继续。",
       overviewConfigTitle: "核心配置与接管",
       overviewConfigDesc: "这几项互相独立，按需要调整。",
       overviewEnvTitle: "环境与权限",
@@ -1425,6 +1419,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       patchFootNone: "没有待写入文件",
       patchFootBlocked: "预检未通过，不会写入",
       patchFootReasonDefault: "写入前会保存快照；完成后需要重启宿主。",
+      nextApplyLabel: "下次应用：",
+      diskStatusLabel: "磁盘状态：",
+      selectionIncluded: "包含",
+      selectionExcluded: "不包含",
+      maintenanceTitle: "恢复与维护",
+      maintenanceRevertTitle: "回退已应用的补丁",
+      maintenanceRevertDesc: "按事务记录恢复原文；发现外部改动时整批拒绝。",
 
       // 阶段三：PatchesPage 与 OverviewPage 重塑文案
       patchesSelectedBadge: (n) => `已选 ${String(n)} 条`,
@@ -1570,14 +1571,14 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       lead: "Loosens limits the host sets too tight, switches prompt modes, and keeps standing rules for the model.",
       tabsLabel: "Breaklimit settings",
       tabOverview: "Overview",
-      tabPatches: "Patches",
+      tabPatches: "Custom patches",
       tabPrompt: "Prompt",
       tabRules: "Rules",
       tabWords: "Word list",
       pageOverviewTitle: "Start here",
-      pageOverviewDesc: "Check the current state, then finish the step that is actually blocking you.",
-      pagePatchesTitle: "Pick the changes you need",
-      pagePatchesDesc: "Select first, apply once. Turning a switch off keeps whatever was already written.",
+      pageOverviewDesc: "The recommended setup is ready. You only need to review and apply it.",
+      pagePatchesTitle: "Custom patches",
+      pagePatchesDesc: "Switches choose what the next apply includes. Source files change only when you apply.",
       pagePromptTitle: "Make the model work your way",
       pagePromptDesc: "Choose a mode, or edit the body both modes share.",
       pageRulesTitle: "Manage long-term rules",
@@ -2147,30 +2148,26 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       termInstructions: "Instructions",
       tipInstructions: "Instruction files read by models at conversation start (e.g. AGENTS.md, CLAUDE.md).",
 
-      // Phase 3 components and models: 4-stage flow
-      flowStep1Title: "Configure host directory",
-      flowStep1Done: "Host source found",
-      flowStep1Current: "Specify host source location",
-      flowStep2Title: "Select patches",
-      flowStep2Done: (n) => `Selected ${String(n)} ${Number(n) === 1 ? "patch" : "patches"}`,
-      flowStep2Current: "None selected",
-      flowStep2Todo: "Configure directory first",
-      flowStep3Title: "Check and apply",
-      flowStep3Blocked: "Preflight blocked, nothing written",
-      flowStep3Revert: "Source reverted",
-      flowStep3Done: "Written to disk",
-      flowStep3Current: (n) => `${String(n)} ${Number(n) === 1 ? "file" : "files"} pending`,
-      flowStep3Todo: "Select patches first",
-      flowStep4Title: "Restart host",
-      flowStep4Current: "Waiting for host restart",
-      flowStep4Done: "Completed",
-      flowStep4Todo: "Pending patch application",
+      // One three-stage flow: choose, apply, restart.
+      flowStep1Title: "Choose setup",
+      flowStep1Done: (n) => `${String(n)} ${Number(n) === 1 ? "patch" : "patches"} selected`,
+      flowStep1Current: "Choose a setup first",
+      flowStep2Title: "Check and apply",
+      flowStep2Blocked: "Preflight blocked, nothing written",
+      flowStep2Revert: "Source reverted",
+      flowStep2Done: "Written to disk",
+      flowStep2Current: (n) => `${String(n)} ${Number(n) === 1 ? "file" : "files"} pending`,
+      flowStep2Todo: "Choose a setup first",
+      flowStep3Title: "Restart host",
+      flowStep3Current: "Waiting for host restart",
+      flowStep3Done: "Completed",
+      flowStep3Todo: "Apply first",
 
       // Phase 3: Action card
       actionCardLabelUrgent: "Action required",
       actionCardLabelNextRoot: "Next - Configure environment",
       actionCardLabelRestart: "One step left - Restart host",
-      actionCardLabelNextApply: "Next - Apply patches",
+      actionCardLabelNextApply: "Recommended setup",
       actionCardLabelOptional: "Select as needed",
       actionCardLabelPass: "Disk check passed",
       actionCardRulesCorruptTitle: "Rules index is unreadable",
@@ -2188,9 +2185,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       actionCardRestartApplyTitle: "Patches written, now restart host",
       actionCardRestartBody: "Disk contents updated, but running host may still execute old code. Refreshing browser will not restart host.",
       actionCardRestartBtn: "View restart steps",
-      actionCardPendingTitle: "Apply chosen changes to host",
-      actionCardPendingBody: (enabled, pending) => `Selected ${String(enabled)} ${Number(enabled) === 1 ? "patch" : "patches"}, preflight passed. Review purposes and the ${String(pending)} ${Number(pending) === 1 ? "file" : "files"} to be modified before applying.`,
-      actionCardPendingBtn: "Review and apply patches",
+      actionCardPendingTitle: "Recommended jailbreak setup",
+      actionCardCustomTitle: "Custom jailbreak setup",
+      actionCardLabelCustom: "Custom setup",
+      actionCardPendingBody: (enabled, pending) => `${String(enabled)} ${Number(enabled) === 1 ? "patch" : "patches"} and the current prompt mode are selected. Preflight passed. The next step writes ${String(pending)} ${Number(pending) === 1 ? "file" : "files"}; restart the host afterward.`,
+      actionCardPendingBtn: "Check and apply recommended setup",
+      actionCardCustomBtn: "Check and apply selected setup",
       actionCardNoneTitle: "No patches selected",
       actionCardNoneBody: "You can still manage prompts and rules. Turning off patch switches keeps already written source changes; use revert to undo.",
       actionCardNoneBtn: "Go pick patches",
@@ -2219,6 +2219,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
       // Phase 3: Overview and patches extension
       overviewFlowLabel: "Patch application progress",
+      overviewCurrentTitle: "Current jailbreak setup",
+      overviewCurrentDesc: "Your recommended setup is in place. Continue with everyday adjustments here.",
       overviewConfigTitle: "Core configuration and takeover",
       overviewConfigDesc: "These settings are independent; adjust as needed.",
       overviewEnvTitle: "Environment and permissions",
@@ -2240,6 +2242,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       patchFootNone: "No pending files to write",
       patchFootBlocked: "Preflight blocked, will not write",
       patchFootReasonDefault: "A snapshot is saved before writing; restart host when done.",
+      nextApplyLabel: "Next apply: ",
+      diskStatusLabel: "On disk: ",
+      selectionIncluded: "Included",
+      selectionExcluded: "Excluded",
+      maintenanceTitle: "Recovery and maintenance",
+      maintenanceRevertTitle: "Revert applied patches",
+      maintenanceRevertDesc: "Restore originals from the transaction. Any external change blocks the whole revert.",
 
       // Phase 3: PatchesPage and OverviewPage restyle
       patchesSelectedBadge: (n) => `${String(n)} ${Number(n) === 1 ? "patch" : "patches"} selected`,
@@ -3133,17 +3142,16 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const effectiveF = f || derive(status)
     const chosen = effectiveF.enabledCount ?? 0
     const count = effectiveF.pendingFiles ?? 0
-    const hasRoot = !effectiveF.rootMissing
+    const ready = !effectiveF.rootMissing && chosen > 0
     const isRestart = effectiveF.restartPending || Boolean(status?.restart)
     const isRevert = status?.restart === "revert" || effectiveF.restart === "revert"
     const isBlocked = (effectiveF.blocked?.length ?? 0) > 0 || effectiveF.broken === true
     const hasApplied = effectiveF.applied !== null && effectiveF.applied !== undefined
 
-    const s1 = hasRoot ? "done" : "current"
-    const s2 = !hasRoot ? "todo" : chosen > 0 ? "done" : "current"
-    const s3 = isRestart
+    const choose = ready ? "done" : "current"
+    const apply = isRestart
       ? "done"
-      : !hasRoot || chosen === 0
+      : !ready
         ? "todo"
         : isBlocked
           ? "blocked"
@@ -3152,37 +3160,24 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             : hasApplied
               ? "done"
               : "todo"
-    const s4 = isRestart ? "current" : s3 === "done" ? "done" : "todo"
+    const restart = isRestart ? "current" : apply === "done" ? "done" : "todo"
 
     return [
-      [
-        T.flowStep1Title,
-        s1,
-        s1 === "done" ? T.flowStep1Done : T.flowStep1Current,
-      ],
+      [T.flowStep1Title, choose, ready ? T.flowStep1Done(chosen) : T.flowStep1Current],
       [
         T.flowStep2Title,
-        s2,
-        chosen > 0 ? T.flowStep2Done(chosen) : s2 === "todo" ? T.flowStep2Todo : T.flowStep2Current,
-      ],
-      [
-        T.flowStep3Title,
-        s3,
-        s3 === "blocked"
-          ? T.flowStep3Blocked
+        apply,
+        apply === "blocked"
+          ? T.flowStep2Blocked
           : isRevert
-            ? T.flowStep3Revert
-            : s3 === "done"
-              ? T.flowStep3Done
-              : s3 === "current"
-                ? T.flowStep3Current(count)
-                : T.flowStep3Todo,
+            ? T.flowStep2Revert
+            : apply === "done"
+              ? T.flowStep2Done
+              : apply === "current"
+                ? T.flowStep2Current(count)
+                : T.flowStep2Todo,
       ],
-      [
-        T.flowStep4Title,
-        s4,
-        s4 === "current" ? T.flowStep4Current : s4 === "done" ? T.flowStep4Done : T.flowStep4Todo,
-      ],
+      [T.flowStep3Title, restart, restart === "current" ? T.flowStep3Current : restart === "done" ? T.flowStep3Done : T.flowStep3Todo],
     ]
   }
 
@@ -3245,14 +3240,19 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       }
     }
     if ((effectiveF.pendingFiles ?? 0) > 0) {
+      const selectedPatches = Array.isArray(effectiveF.patches) ? effectiveF.patches : []
+      const recommended = selectedPatches.length === 0 || selectedPatches.every((patch) => {
+        const eligible = effectiveF.mode === "unrestricted" || (patch.id !== "minimal.unfreeze" && patch.unrestricted !== true)
+        return !eligible || patch.enabled === true
+      })
       return {
         tone: "",
-        label: T.actionCardLabelNextApply,
-        title: T.actionCardPendingTitle,
+        label: recommended ? T.actionCardLabelNextApply : T.actionCardLabelCustom,
+        title: recommended ? T.actionCardPendingTitle : T.actionCardCustomTitle,
         body: T.actionCardPendingBody(effectiveF.enabledCount ?? 0, effectiveF.pendingFiles),
-        button: T.actionCardPendingBtn,
-        action: "goPatches",
-        icon: "arrow",
+        button: recommended ? T.actionCardPendingBtn : T.actionCardCustomBtn,
+        action: "apply",
+        icon: "shield",
       }
     }
     if ((effectiveF.total ?? 0) > 0 && (effectiveF.enabledCount ?? 0) === 0) {
@@ -3569,9 +3569,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         ? effectiveWhen
         : T.whenTag(effectiveWhen)
 
-    return h("div", { style: S.pageHeadWrap },
-      h("div", { style: S.pageHead },
-        h("div", { style: S.pageHeadText },
+    return h("div", { className: "bkl-page-head-wrap", style: S.pageHeadWrap },
+      h("div", { className: "bkl-page-head", style: S.pageHead },
+        h("div", { className: "bkl-page-head-text", style: S.pageHeadText },
           h("h2", { id: titleId, style: S.pageTitle }, title),
           desc === undefined ? null : h("p", { style: S.pageDesc }, desc)),
         whenText === null ? null : h("span", { className: "bkl-badge-effect", style: S.whenTag },
@@ -4061,56 +4061,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       }))
   }
 
-  // 三步引导卡：独立组件（不在 tablist 内）。展开态显示进度与三步链接，
-  // 关闭态只留一个 link 按钮。三步的完成条件与 flowSteps 同源数据（f/restart）。
-  function GuideBlock({ f, open, onToggle, onGo }) {
-    const steps = [
-      { title: T.guideStep1Title, body: T.guideStep1Body, tab: "prompt", done: true, defaultHint: true },
-      { title: T.guideStep2Title, body: T.guideStep2Body, tab: "patches", done: f.enabledCount > 0, defaultHint: false },
-      { title: T.guideStep3Title, body: T.guideStep3Body, tab: "patches", done: f.applied !== null && f.pendingFiles === 0 && !f.restartPending, defaultHint: false },
-    ]
-    const doneCount = steps.filter(step => step.done).length
-    const currentIndex = steps.findIndex(step => !step.done)
-    if (!open) {
-      return h("div", null,
-        h(Button, { kind: "link", onClick: onToggle },
-          h(Icon, { name: "help", size: 15 }),
-          T.guideShow))
-    }
-    return h("section", { className: "bkl-guide", "aria-labelledby": "bkl-guide-title" },
-      h("div", { className: "bkl-guide-title" },
-        h("h3", { id: "bkl-guide-title" }, T.guideTitle),
-        h("div", { className: "bkl-guide-progress" },
-          h("span", null, T.guideProgress(doneCount)),
-          h("span", { className: "bkl-guide-bar", "aria-hidden": "true" },
-            h("span", { style: { width: `${String(Math.round((doneCount / 3) * 100))}%` } })),
-          h(Button, { kind: "link", label: T.guideHide, onClick: onToggle }, T.guideHide))),
-      steps.map((step, index) => {
-        const now = index === currentIndex
-        return h("div", { key: String(index), className: now ? "bkl-guide-item is-current" : "bkl-guide-item" },
-          h("span", {
-            className: step.done ? "bkl-step-num done" : now ? "bkl-step-num current" : "bkl-step-num",
-            "aria-hidden": "true",
-          }, step.done ? h(Icon, { name: "check", size: 13 }) : String(index + 1)),
-          h("div", { style: { flex: "1 1 auto", minWidth: 0 } },
-            h("strong", null,
-              step.title,
-              step.defaultHint ? h("span", { style: merge(S.small, { marginLeft: "8px", fontWeight: 400 }) }, T.guideDefaultHint) : null),
-            h("p", null, step.body)),
-          h(Button, {
-            kind: "link",
-            label: `${step.title} · ${now ? T.guideGo : T.guideView}`,
-            onClick: () => { onGo(step.tab) },
-          },
-            now ? T.guideGo : T.guideView,
-            h(Icon, { name: "chevron", size: 15 })))
-      }))
-  }
-
-  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, guideOpen, onToggleGuide, onCopy, loadedAt, onOpenHelp }) {
-    // 技术诊断默认展开。必须是受控状态：只写 open 而不接管 onToggle 时，
-    // 每次重渲染（loadedAt 定时器）都会把 open 设回去，用户收起后又被展开。
-    const [diagOpen, setDiagOpen] = useState(true)
+  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, onCopy, loadedAt, onOpenHelp }) {
+    // 技术诊断默认收起；open 仍受控，重渲染不会覆盖用户的展开选择。
+    const [diagOpen, setDiagOpen] = useState(false)
     const target = status?.target ?? {}
     const rootHint = status?.hostRoot ? `${T.rootSource(status.hostRootSource)}${T.sep}${String(status.hostRoot)}` : T.rootMissingShort
     let preValue = T.unknown
@@ -4134,11 +4087,18 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         ? T.wordsSummaryFailed
         : words?.entries?.length === 0 ? T.wordsSummaryEmpty : T.wordsSummaryCount(words?.entries?.length ?? 0)
 
-    return h("div", { style: S.panel },
-      // 1. 顶部调用 PageHead（从这里开始，page: "overview"）
-      h(PageHead, { page: "overview", title: T.pageOverviewTitle, desc: T.pageOverviewDesc, titleId: "bkl-page-overview" }),
+    const completed = actionCard.tone === "ok"
 
-      // 2. 第一层：4 阶段进度条（ol.bkl-flow，全宽）
+    return h("div", { style: S.panel },
+      h(PageHead, {
+        page: "overview",
+        title: completed ? T.overviewCurrentTitle : T.pageOverviewTitle,
+        desc: completed ? T.overviewCurrentDesc : T.pageOverviewDesc,
+        titleId: "bkl-page-overview",
+        tipOpen: false,
+      }),
+
+      // 第一层：一套三阶段进度条（ol.bkl-flow，全宽）
       h("ol", { className: "bkl-flow", "aria-label": T.overviewFlowLabel },
         steps.map(([title, state, sub], index) => {
           const isCurrent = state === "current" || state === "blocked"
@@ -4150,9 +4110,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               h("span", { className: "bkl-sub" }, sub)))
         })),
 
-      // 3. 第二层起：bkl-columns 双栏（左：行动卡、Guide、配置卡；右：环境卡、help-box、技术诊断）
+      // 第二层起：bkl-columns 双栏（左：行动卡与配置；右：环境、帮助与诊断）
       h("div", { className: "bkl-columns" },
-        // 左栏：主行动卡 + 三步引导 + 核心配置与接管（4 行尾部都是 link，接管行是 Switch）
+        // 左栏：主行动卡 + 核心配置与接管（4 行尾部都是 link，接管行是 Switch）
         h("div", { style: { display: "flex", flexDirection: "column", gap: tk.gapBlock, minWidth: 0 } },
           h("section", { className: `bkl-action-card${actionToneClass}`, "aria-labelledby": "bkl-action-title" },
             h("div", { className: "bkl-action-eyebrow" },
@@ -4170,7 +4130,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
               }, actionCard.button),
               restart !== null ? restartView : null,
               nextNotice ?? null)),
-          h(GuideBlock, { f, open: guideOpen, onToggle: onToggleGuide, onGo }),
           h(Card, {
             title: T.overviewConfigTitle,
             titleId: "bkl-config-title",
@@ -4379,9 +4338,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             isUnrestrictedPatch ? h(Tag, { tone: "warn" }, T.onlyUnrestricted) : null,
             patch.kind === "replace" ? h(Tag, null, T.kindReplace) : null),
           human ? h("p", { style: merge(S.text, { margin: "3px 0 10px", fontSize: "13px" }) }, human) : null,
-          // 状态胶囊徽章与文件数与模式切换链接
-          h("div", { style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)" } },
-            h(Tag, { tone: diskTone }, diskBadgeText),
+          // 选择只影响下一次应用；磁盘状态来自预检，两者不能混成“已生效”。
+          h("div", { className: "bkl-patch-states", style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)" } },
+            h("span", { className: selected ? "bkl-patch-selection selected" : "bkl-patch-selection" },
+              `${T.nextApplyLabel}${selected ? T.selectionIncluded : T.selectionExcluded}`),
+            h("span", null, `${T.diskStatusLabel}`, h(Tag, { tone: diskTone }, diskBadgeText)),
             h("span", null, T.touchesFiles(filesCount)),
             disabledByMode ? h("button", {
               type: "button",
@@ -4499,18 +4460,12 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
       noticeView ?? null,
 
-      // 5. 悬浮固定底部操作栏（footer.bkl-sticky-footer）
+      // 主操作栏只保留应用；恢复类操作放到独立区域，避免与主按钮并排。
       h("footer", { className: "bkl-sticky-footer" },
         h("div", { className: `bkl-foot-copy ${isBlocked ? "blocked" : ""}` },
           h("strong", null, footStatusText),
           h("div", { className: "bkl-foot-reason" }, applyWhy ?? T.patchFootReasonDefault)),
         h("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginLeft: "auto" } },
-          h(Button, {
-            kind: "quietDanger",
-            off: revertWhy !== null,
-            reason: revertWhy,
-            onClick: onRevert,
-          }, T.revert),
           h(Button, {
             kind: "primary",
             off: applyWhy !== null,
@@ -4518,7 +4473,19 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             onClick: onApply,
           },
             busy ? h("span", { className: "bkl-spinner", style: { marginRight: "6px", width: "12px", height: "12px", display: "inline-block" } }) : null,
-            f.pendingFiles > 0 ? T.applyN(f.pendingFiles) : T.apply))))
+            f.pendingFiles > 0 ? T.applyN(f.pendingFiles) : T.apply))),
+      h("details", { className: "bkl-maintenance" },
+        h("summary", null, T.maintenanceTitle),
+        h("div", { className: "bkl-maintenance-body" },
+          h("div", null,
+            h("strong", null, T.maintenanceRevertTitle),
+            h("p", null, T.maintenanceRevertDesc)),
+          h(Button, {
+            kind: "quietDanger",
+            off: revertWhy !== null,
+            reason: revertWhy,
+            onClick: onRevert,
+          }, T.revert))))
   }
 
   // ---- 提示词与规则 ---------------------------------------------------------
@@ -5246,9 +5213,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const [notices, setNotices] = useState({})
     const [restart, setRestart] = useState(null)
     const [draft, setDraft] = useState(sectionDrafts.prompt)
-    // 三步引导默认收起：首次配置时需要，之后每次进概览都占掉一屏左栏。
-    // 折叠态仍留「展开步骤」链接，展开只影响本次挂载（宿主切页签会重挂载）。
-    const [guideOpen, setGuideOpen] = useState(false)
     const [ruleEdit, setRuleEditState] = useState(sectionDrafts.rule)
     const [selectedRuleId, setSelectedRuleId] = useState(sectionDrafts.rule?.id ?? null)
     const [ruleBody, setRuleBody] = useState({ id: null, status: "idle", text: "" })
@@ -5682,6 +5646,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     const runAction = useCallback((action) => {
       if (action === "retry" || action === "refresh") void load()
+      else if (action === "apply") askApply()
       else if (action === "goPatches") goTab("patches")
       else if (action === "goPrompt") goTab("prompt")
       else if (action === "goRules") goTab("rules")
@@ -6230,8 +6195,6 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         loadedAt,
         step: nextStep(f, loadError),
         words: aliasStore.state,
-        guideOpen,
-        onToggleGuide: () => { setGuideOpen(prev => !prev) },
         nextNotice: noticeFor("next"),
         overviewNotice: noticeFor("overview"),
         onRun: runAction,

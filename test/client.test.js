@@ -970,7 +970,7 @@ test('P1 设计系统：Toast 视觉层不带 live region，Announcer 常驻播�
 // Section 行为测试用的桩：可写 state、可捕获 cleanup、假计时器。
 // hooks[1] 的注入依赖位置假设：status 必须是 Section 第 2 个 useState（0 基下标 1）。
 // 注入 fakeStatus 后概览页才渲染 OverviewPage。其余常用槽位（useState 调用序）：
-// override=5、draft=16、ruleEdit=18；用 options.hooks 按下标覆盖。
+// override=5、draft=16、ruleEdit=17；用 options.hooks 按下标覆盖。
 function loadSectionHarness(writeTextImpl, options = {}) {
   let registration
   const hooks = []
@@ -1349,108 +1349,73 @@ test('Term 术语释义组件：在页面状态卡与标题中的实际挂载与
   }
 })
 
-test('阶段三：flowSteps 4 阶段进度流纯函数建模', () => {
+test('概览使用一套三阶段流程，不再叠加另一套引导', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { flowSteps } = exported
-  assert.equal(typeof flowSteps, 'function', 'flowSteps 必须被导出')
 
-  // 场景 1: 未配置宿主目录
-  const s1 = flowSteps({ hostRoot: null }, { rootMissing: true, enabledCount: 0, pendingFiles: 0, blocked: [] })
-  assert.equal(s1.length, 4)
-  assert.deepEqual(plain(s1[0]), ['配置宿主目录', 'current', '告诉插件源码在哪'])
-  assert.equal(s1[1][1], 'todo')
-  assert.equal(s1[2][1], 'todo')
-  assert.equal(s1[3][1], 'todo')
+  const missing = flowSteps({ hostRoot: null }, { rootMissing: true, enabledCount: 0, pendingFiles: 0, blocked: [] })
+  assert.equal(missing.length, 3)
+  assert.deepEqual(plain(missing[0]), ['选择方案', 'current', '先完成方案选择'])
+  assert.equal(missing[1][1], 'todo')
+  assert.equal(missing[2][1], 'todo')
 
-  // 场景 2: 目录已就位，但尚未选择补丁
-  const s2 = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 0, pendingFiles: 0, blocked: [] })
-  assert.deepEqual(plain(s2[0]), ['配置宿主目录', 'done', '已找到宿主源码'])
-  assert.deepEqual(plain(s2[1]), ['选择补丁', 'current', '还没有选择'])
-  assert.equal(s2[2][1], 'todo')
-  assert.equal(s2[3][1], 'todo')
+  const none = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 0, pendingFiles: 0, blocked: [] })
+  assert.deepEqual(plain(none[0]), ['选择方案', 'current', '先完成方案选择'])
 
-  // 场景 3: 已选 2 条补丁，待写入 3 个文件
-  const s3 = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 2, pendingFiles: 3, blocked: [] })
-  assert.equal(s3[0][1], 'done')
-  assert.deepEqual(plain(s3[1]), ['选择补丁', 'done', '已选 2 条'])
-  assert.deepEqual(plain(s3[2]), ['检查并应用', 'current', '待写入 3 个文件'])
-  assert.equal(s3[3][1], 'todo')
+  const pending = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 2, pendingFiles: 3, blocked: [] })
+  assert.deepEqual(plain(pending[0]), ['选择方案', 'done', '已选 2 条'])
+  assert.deepEqual(plain(pending[1]), ['检查并应用', 'current', '待写入 3 个文件'])
+  assert.equal(pending[2][1], 'todo')
 
-  // 场景 4: 预检阻断
-  const s4 = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 2, pendingFiles: 0, blocked: [{ patchId: 'p1' }] })
-  assert.equal(s4[2][1], 'blocked')
-  assert.deepEqual(plain(s4[2]), ['检查并应用', 'blocked', '预检未通过，未写入'])
+  const blocked = flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 2, pendingFiles: 0, blocked: [{ patchId: 'p1' }] })
+  assert.deepEqual(plain(blocked[1]), ['检查并应用', 'blocked', '预检未通过，未写入'])
 
-  // 场景 5: 等待重启
-  const s5 = flowSteps({ hostRoot: '/dsh', restart: 'apply' }, { rootMissing: false, restartPending: true, enabledCount: 2, pendingFiles: 0, blocked: [] })
-  assert.equal(s5[2][1], 'done')
-  assert.deepEqual(plain(s5[3]), ['重启宿主', 'current', '等你按原方式重启'])
+  const restart = flowSteps({ hostRoot: '/dsh', restart: 'apply' }, { rootMissing: false, restartPending: true, enabledCount: 2, pendingFiles: 0, blocked: [] })
+  assert.equal(restart[1][1], 'done')
+  assert.deepEqual(plain(restart[2]), ['重启宿主', 'current', '等你按原方式重启'])
 
-  // 场景 6: 英文语言环境下输出纯英文字符串
   const { exported: exportedEn } = loadClient({ document: { documentElement: { lang: 'en' } } })
-  const sEn = exportedEn.flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 1, pendingFiles: 1, blocked: [] })
-  assert.deepEqual(plain(sEn[0]), ['Configure host directory', 'done', 'Host source found'])
-  assert.deepEqual(plain(sEn[1]), ['Select patches', 'done', 'Selected 1 patch'])
-  assert.deepEqual(plain(sEn[2]), ['Check and apply', 'current', '1 file pending'])
-  assert.deepEqual(plain(sEn[3]), ['Restart host', 'todo', 'Pending patch application'])
+  const english = exportedEn.flowSteps({ hostRoot: '/dsh' }, { rootMissing: false, enabledCount: 1, pendingFiles: 1, blocked: [] })
+  assert.deepEqual(plain(english[0]), ['Choose setup', 'done', '1 patch selected'])
+  assert.deepEqual(plain(english[1]), ['Check and apply', 'current', '1 file pending'])
+  assert.deepEqual(plain(english[2]), ['Restart host', 'todo', 'Apply first'])
 })
 
-test('阶段三：deriveActionCard 主行动卡片优先级判定与数据结构', () => {
+test('deriveActionCard 保留异常优先级，待应用主按钮直接执行现有应用流程', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { deriveActionCard } = exported
-  assert.equal(typeof deriveActionCard, 'function', 'deriveActionCard 必须被导出')
 
-  // 1. 规则清单损坏优先级最高
-  const aCorrupt = deriveActionCard({}, { rulesIndex: 'corrupt', rootMissing: true, broken: true })
-  assert.equal(aCorrupt.tone, 'error')
-  assert.equal(aCorrupt.action, 'goRules')
-  assert.equal(aCorrupt.icon, 'alert')
-  assert.equal(aCorrupt.label, '需要先处理')
-  assert.equal(aCorrupt.title, '规则清单读不出来')
+  const corrupt = deriveActionCard({}, { rulesIndex: 'corrupt', rootMissing: true, broken: true })
+  assert.equal(corrupt.action, 'goRules')
+  assert.equal(corrupt.tone, 'error')
+  assert.equal(deriveActionCard({}, { broken: true, rootMissing: true }).action, 'refresh')
+  assert.equal(deriveActionCard({}, { rootMissing: true, blocked: [] }).action, 'configureRoot')
+  assert.equal(deriveActionCard({}, { rootMissing: false, blocked: [{ patchId: 'p' }] }).action, 'goPatches')
+  assert.equal(deriveActionCard({ restart: 'apply' }, { restartPending: true, rootMissing: false, blocked: [] }).action, 'restartHelp')
 
-  // 2. 状态记录损坏
-  const aBroken = deriveActionCard({}, { broken: true, rootMissing: true })
-  assert.equal(aBroken.tone, 'error')
-  assert.equal(aBroken.action, 'refresh')
-  assert.equal(aBroken.icon, 'alert')
+  const pending = deriveActionCard({}, { pendingFiles: 2, enabledCount: 3, total: 3, rootMissing: false, blocked: [] })
+  assert.equal(pending.action, 'apply')
+  assert.equal(pending.icon, 'shield')
+  assert.equal(pending.label, '推荐方案')
 
-  // 3. 宿主目录未配置
-  const aRoot = deriveActionCard({}, { rootMissing: true, blocked: [] })
-  assert.equal(aRoot.tone, 'warn')
-  assert.equal(aRoot.action, 'configureRoot')
-  assert.equal(aRoot.icon, 'folder')
-  assert.equal(aRoot.label, '下一步 · 配置环境')
+  const selection = {
+    pendingFiles: 1,
+    total: 2,
+    rootMissing: false,
+    blocked: [],
+    mode: 'recommended',
+    patches: [{ id: 'output.trim', enabled: true }, { id: 'read.limits', enabled: true }],
+  }
+  const recommended = deriveActionCard({}, { ...selection, enabledCount: 2 })
+  assert.equal(recommended.title, '推荐破限方案')
+  const custom = deriveActionCard({}, { ...selection, enabledCount: 1, patches: [{ id: 'output.trim', enabled: true }, { id: 'read.limits', enabled: false }] })
+  assert.equal(custom.title, '自定义破限方案')
+  assert.equal(custom.button, '检查并应用所选方案')
 
-  // 4. 预检阻断
-  const aBlocked = deriveActionCard({}, { rootMissing: false, blocked: [{ patchId: 'p' }] })
-  assert.equal(aBlocked.tone, 'error')
-  assert.equal(aBlocked.action, 'goPatches')
-  assert.equal(aBlocked.icon, 'alert')
-
-  // 5. 等待重启
-  const aRestart = deriveActionCard({ restart: 'apply' }, { restartPending: true, rootMissing: false, blocked: [] })
-  assert.equal(aRestart.tone, 'warn')
-  assert.equal(aRestart.action, 'restartHelp')
-  assert.equal(aRestart.icon, 'refresh')
-
-  // 6. 有待写入文件
-  const aPending = deriveActionCard({}, { pendingFiles: 2, enabledCount: 3, total: 3, rootMissing: false, blocked: [] })
-  assert.equal(aPending.action, 'goPatches')
-  assert.equal(aPending.icon, 'arrow')
-  assert.equal(aPending.label, '下一步 · 应用补丁')
-
-  // 7. 未选择补丁
-  const aNone = deriveActionCard({}, { pendingFiles: 0, enabledCount: 0, total: 3, rootMissing: false, blocked: [] })
-  assert.equal(aNone.action, 'goPatches')
-  assert.equal(aNone.icon, 'patch')
-  assert.equal(aNone.label, '按需选择')
-
-  // 8. 检查通过全部就位
-  const aDone = deriveActionCard({}, { pendingFiles: 0, enabledCount: 3, total: 3, rootMissing: false, blocked: [] })
-  assert.equal(aDone.tone, 'ok')
-  assert.equal(aDone.action, 'goPrompt')
-  assert.equal(aDone.icon, 'check')
-  assert.equal(aDone.label, '磁盘检查通过')
+  assert.equal(deriveActionCard({}, { pendingFiles: 0, enabledCount: 0, total: 3, rootMissing: false, blocked: [] }).action, 'goPatches')
+  const done = deriveActionCard({}, { pendingFiles: 0, enabledCount: 3, total: 3, rootMissing: false, blocked: [] })
+  assert.equal(done.tone, 'ok')
+  assert.equal(done.action, 'goPrompt')
 })
 
 test('阶段三：formatDiagnostics 严格脱敏与尾段收敛', () => {
@@ -1568,16 +1533,14 @@ test('深色配色以 body 上的实际调色板属性为条件，跟随系统�
   assert.equal(css.includes('--bkl-toast-icon: #1f6e4c;'), true, '浮窗 toast 图标同样按原型取值')
 })
 
-test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、columns 双栏配置清单与技术诊断脱敏折叠', () => {
+test('OverviewPage：三阶段流程、主行动卡、双栏配置与默认收起的诊断', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   const { OverviewPage } = exported
   assert.equal(typeof OverviewPage, 'function', 'OverviewPage 必须被导出')
 
   let actionRan = null
   let toggledEnabled = null
-  let navigatedTab = null
   let copiedText = null
-  let guideToggled = false
   let helpOpened = 0
 
   const fakeStatus = {
@@ -1599,7 +1562,6 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
     enabledCount: 2,
     pendingFiles: 1,
     total: 5,
-    // applied 为 null：Guide step3 未完成（当前步落第 3 步），flow 第 3 阶段仍是 current。
     applied: null,
     preCode: 'ok',
     restartPending: false,
@@ -1610,7 +1572,7 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
     entries: [{ from: '原词', to: '替换词' }],
   }
 
-  const renderPage = (guideOpen, words = fakeWords, f = fakeF) => OverviewPage({
+  const renderPage = (words = fakeWords, f = fakeF) => OverviewPage({
     f,
     status: fakeStatus,
     override: null,
@@ -1621,10 +1583,8 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
     step: { tone: 'ok', title: '完成' },
     words,
     loadedAt: Date.now(),
-    guideOpen,
-    onToggleGuide() { guideToggled = true },
     onRun(action) { actionRan = action },
-    onGo(tab) { navigatedTab = tab },
+    onGo() {},
     onToggleEnabled(next) { toggledEnabled = next },
     onCopy(text) { copiedText = text },
     onOpenHelp() { helpOpened += 1 },
@@ -1632,17 +1592,16 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
     overviewNotice: null,
   })
 
-  const tree = mount(renderPage(true))
+  const tree = mount(renderPage())
 
-  // 1. 验证 4 阶段进度条（ol.bkl-flow）
+  // 1. 验证三阶段进度条（ol.bkl-flow）
   const flowNode = findAll(tree, n => n.type === 'ol' && n.props?.className === 'bkl-flow')[0]
   assert.equal(Boolean(flowNode), true, '应渲染 ol.bkl-flow 进度流')
   const flowItems = findAll(flowNode, n => n.type === 'li')
-  assert.equal(flowItems.length, 4, '进度流应包含 4 个步骤')
+  assert.equal(flowItems.length, 3, '进度流只保留选择、应用、重启三步')
   assert.equal(flowItems[0].props.className, 'done')
-  assert.equal(flowItems[1].props.className, 'done')
-  assert.equal(flowItems[2].props.className, 'current')
-  assert.equal(flowItems[3].props.className, 'todo')
+  assert.equal(flowItems[1].props.className, 'current')
+  assert.equal(flowItems[2].props.className, 'todo')
 
   // 2. 验证主行动卡（section.bkl-action-card 纵向：eyebrow 图标圆 + h2 + 段落 + 按钮行）
   const actionCardNode = findAll(tree, n => n.type === 'section' && String(n.props?.className).includes('bkl-action-card'))[0]
@@ -1656,68 +1615,18 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   assert.equal(Boolean(actionActions), true, '行动卡应有按钮行 bkl-action-actions')
   const actionBtn = findAll(actionActions, n => n.type === 'button')[0]
   actionBtn.props.onClick({ preventDefault() {} })
-  assert.equal(actionRan, 'goPatches', '点击主行动卡片按钮应触发 action')
+  assert.equal(actionRan, 'apply', '待应用主按钮直接进入现有应用流程')
 
   // 3. 验证 bkl-columns 双栏
   const columnsNode = findAll(tree, n => n.props?.className === 'bkl-columns')[0]
   assert.equal(Boolean(columnsNode), true, '应渲染双栏网格 bkl-columns')
   assert.equal(findAll(tree, n => String(n.props?.className ?? '').includes('bkl-balanced-grid')).length, 0, '不应再有 bkl-balanced-grid')
   assert.equal(findAll(tree, n => String(n.props?.className ?? '').includes('bkl-hero-card')).length, 0, '不应再有 bkl-hero-card')
+  assert.equal(findAll(tree, n => n.props?.className === 'bkl-guide').length, 0, '不再叠加另一套 Guide')
+  assert.equal(findAll(tree, n => n.type === exported.PageTip).length, 0, '概览不再重复显示 PageTip')
 
-  // 4. 验证 Guide 三步引导（展开态）：进度、三步、当前步、收起链接
-  const guideNode = findAll(tree, n => n.props?.className === 'bkl-guide')[0]
-  assert.equal(Boolean(guideNode), true, '展开态应渲染 bkl-guide')
-  const guideItems = findAll(guideNode, n => String(n.props?.className ?? '').includes('bkl-guide-item'))
-  assert.equal(guideItems.length, 3, 'Guide 应有 3 个步骤行')
-  assert.equal(textOf(guideNode).includes('已完成 2 / 3'), true, '进度文本应显示已完成 n / 3')
-  const currentItems = findAll(guideNode, n => n.props?.className === 'bkl-guide-item is-current')
-  assert.equal(currentItems.length, 1, '应有且仅有一个当前步 is-current')
-  assert.equal(textOf(currentItems[0]).includes('应用，并重启宿主'), true, '当前步应是第一个未完成项（第 3 步）')
-  assert.equal(textOf(guideItems[0]).includes('已有默认值'), true, 'step1 标题应带默认值后缀')
-  const doneNums = findAll(guideNode, n => n.props?.className === 'bkl-step-num done')
-  assert.equal(doneNums.length, 2, '已完成的两步序号块应为 done')
-  const guideButtons = findAll(guideNode, n => n.type === 'button')
-  const collapseLink = guideButtons.find(b => textOf(b).includes('收起步骤'))
-  assert.equal(Boolean(collapseLink), true, '应有收起链接（guideHide）')
-  const goLink = guideButtons.find(b => textOf(b).includes('去完成'))
-  assert.equal(Boolean(goLink), true, '当前步链接文案应为「去完成」')
-  goLink.props.onClick({ preventDefault() {} })
-  assert.equal(navigatedTab, 'patches', '第 3 步链接应跳转 patches')
-  const step1Link = findAll(guideItems[0], n => n.type === 'button')[0]
-  step1Link.props.onClick({ preventDefault() {} })
-  assert.equal(navigatedTab, 'prompt', 'step1 链接应跳转 prompt')
-  // 步骤链接的可访问名称带上步骤标题，读屏列表里可区分
-  const stepLinkLabels = guideItems.map(item => String(findAll(item, n => n.type === 'button')[0]?.props?.['aria-label'] ?? ''))
-  const stepTitles = ['选择提示词模式', '选择需要的补丁', '应用，并重启宿主']
-  stepLinkLabels.forEach((label, stepIndex) => {
-    assert.equal(label.includes(stepTitles[stepIndex]), true, `步骤 ${String(stepIndex + 1)} 链接的可访问名称应含步骤标题（实际：${label}）`)
-    assert.equal(label.includes('查看') || label.includes('去完成'), true, `步骤 ${String(stepIndex + 1)} 链接的可访问名称应含动作词`)
-  })
-  collapseLink.props.onClick({ preventDefault() {} })
-  assert.equal(guideToggled, true, '收起链接应触发 onToggleGuide')
-
-  // 4b. 第 3 步的完成条件要连 pendingFiles 一起看：应用过、但改过补丁选择又产生待写入
-  // 文件时，这一步不能显示已完成，否则会和同一屏 flowSteps 判出的 current 打架。
-  const staleTree = mount(renderPage(true, fakeWords, { ...fakeF, applied: { files: 3 }, pendingFiles: 2 }))
-  const staleGuide = findAll(staleTree, n => n.props?.className === 'bkl-guide')[0]
-  const staleCurrent = findAll(staleGuide, n => n.props?.className === 'bkl-guide-item is-current')
-  assert.equal(staleCurrent.length, 1, '应仍有且仅有一个当前步')
-  assert.equal(textOf(staleCurrent[0]).includes('应用，并重启宿主'), true, '应用过但仍有待写入文件时，当前步应停在「应用，并重启宿主」')
-  assert.equal(findAll(staleGuide, n => n.props?.className === 'bkl-step-num done').length, 2, '这一步不该算完成')
-
-  // 4c. 对照组：待写入归零且无待重启，三步全完成，不再留当前步。
-  const allDoneTree = mount(renderPage(true, fakeWords, { ...fakeF, applied: { files: 3 }, pendingFiles: 0 }))
-  const allDoneGuide = findAll(allDoneTree, n => n.props?.className === 'bkl-guide')[0]
-  assert.equal(textOf(allDoneGuide).includes('已完成 3 / 3'), true, '三步都完成时进度应为 3 / 3')
-  assert.equal(findAll(allDoneGuide, n => n.props?.className === 'bkl-guide-item is-current').length, 0, '全部完成时不应再有当前步')
-
-  // 5. 关闭态：只留 guideShow link
-  const closedTree = mount(renderPage(false))
-  assert.equal(findAll(closedTree, n => n.props?.className === 'bkl-guide').length, 0, '关闭态不应渲染 bkl-guide')
-  const showLink = findAll(closedTree, n => n.type === 'button' && textOf(n).includes('展开步骤'))[0]
-  assert.equal(Boolean(showLink), true, '关闭态应显示 guideShow link')
-  showLink.props.onClick({ preventDefault() {} })
-  assert.equal(guideToggled, true, '展开链接应触发 onToggleGuide')
+  const doneTree = mount(renderPage(fakeWords, { ...fakeF, applied: { files: 3 }, pendingFiles: 0 }))
+  assert.equal(textOf(doneTree).includes('当前破限配置'), true, '完成态停止显示首次配置引导')
 
   // 6. 验证核心配置清单（div.bkl-summary-list，尾钮 link + chevron，接管行 Switch）
   const summaryList = findAll(columnsNode, n => n.props?.className === 'bkl-summary-list')[0]
@@ -1754,8 +1663,8 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   // 9. 验证技术诊断折叠块（details.bkl-disclosure、一键复制按钮与提示）
   const disclosure = findAll(columnsNode, n => n.type === 'details' && n.props?.className === 'bkl-disclosure')[0]
   assert.equal(Boolean(disclosure), true, '应渲染技术诊断折叠块')
-  // 默认展开；必须接管 onToggle，否则重渲染会把 open 设回去，用户收起后又弹开。
-  assert.equal(disclosure.props.open, true, '技术诊断应默认展开')
+  // 默认收起；仍须接管 onToggle，避免重渲染覆盖用户的展开选择。
+  assert.equal(disclosure.props.open, false, '技术诊断应默认收起')
   assert.equal(typeof disclosure.props.onToggle, 'function', '应接管 onToggle 以保持受控')
   assert.equal(textOf(disclosure).includes('含本机路径，不含凭据'), true, '应展示不含凭据提示')
   const copyBtn = findAll(disclosure, n => n.type === 'button').find(b => textOf(b).includes('复制诊断信息'))
@@ -1764,7 +1673,7 @@ test('重塑 OverviewPage：4阶段进度流、action-card 与 Guide 三步、co
   assert.equal(typeof copiedText === 'string' && copiedText.includes('宿主根: …/dsh-host'), true, '点击应触发一键复制脱敏文本')
 
   // 10. 词库 loading：配置卡显示「词表读取中…」，不误报「读取失败」
-  const loadingTree = mount(renderPage(true, { phase: 'loading', entries: [], stale: false }))
+  const loadingTree = mount(renderPage({ phase: 'loading', entries: [], stale: false }))
   const loadingConfig = findAll(loadingTree, n => n.props?.className === 'bkl-summary-list')[0]
   assert.equal(Boolean(loadingConfig), true, 'loading 期配置卡应渲染')
   assert.equal(textOf(loadingConfig).includes('词表读取中…'), true, 'loading 期配置卡应显示「词表读取中…」')
@@ -1939,6 +1848,8 @@ test('重塑 PatchesPage：已选数量徽章、阻断/未配目录 Notice、分
   assert.equal(Boolean(iconWrap1), true, '应渲染特征图标容器')
   const tagPending = findAll(row1, n => n.type === 'span' && textOf(n).includes('待写入'))[0]
   assert.equal(Boolean(tagPending), true, '应渲染待写入状态胶囊徽章')
+  assert.equal(textOf(row1).includes('下次应用：包含'), true, '选择状态必须独立于磁盘状态')
+  assert.equal(textOf(row1).includes('磁盘状态：待写入'), true, '磁盘状态必须明确标出')
 
   // 第二行：minimal.unfreeze（推荐模式门禁 -> 带 .inactive）
   const row2 = rows[1]
@@ -1963,14 +1874,17 @@ test('重塑 PatchesPage：已选数量徽章、阻断/未配目录 Notice、分
   assert.equal(textOf(footCopy).includes('预计写入 1 个文件'), true, '底部左侧应展示预计写入文件数')
 
   const buttons = findAll(footer, n => n.type === 'button')
-  const revertBtn = buttons.find(b => textOf(b).includes('回退'))
   const applyBtn = buttons.find(b => textOf(b).includes('写入 1 个文件') || textOf(b).includes('检查并应用') || textOf(b).includes('应用'))
-  assert.equal(Boolean(revertBtn), true, '应渲染回退按钮')
+  assert.equal(buttons.some(b => textOf(b).includes('回退')), false, '主操作栏不再并排展示回退')
   assert.equal(Boolean(applyBtn), true, '应渲染应用按钮')
-  revertBtn.props.onClick({ preventDefault() {} })
   applyBtn.props.onClick({ preventDefault() {} })
-  assert.equal(reverted, true, '点击回退应触发 onRevert')
   assert.equal(applied, true, '点击应用应触发 onApply')
+
+  const maintenance = findAll(tree, n => n.type === 'details' && n.props?.className === 'bkl-maintenance')[0]
+  assert.equal(Boolean(maintenance), true, '回退应移入独立恢复与维护区域')
+  const revertBtn = findAll(maintenance, n => n.type === 'button' && textOf(n).includes('回退'))[0]
+  revertBtn.props.onClick({ preventDefault() {} })
+  assert.equal(reverted, true, '恢复区的回退仍触发原 onRevert')
 })
 
 test('阶段四：两档模式权衡卡片（mode-grid）要点与预算渲染，切换时横向对比表（compare）结构与参数对比', () => {
@@ -2633,7 +2547,7 @@ test('P2 壳层：页签五图标、patches 计数角标、错误红徽章与脏
     hooks: {
       5: { text: 'base text' },
       16: 'changed text',
-      18: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'new', isNew: false, baseline: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'old' } },
+      17: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'new', isNew: false, baseline: { id: 'r1', name: 'n', target: 'AGENTS.md', text: 'old' } },
     },
   })
   const dirtyTabs = findAll(dirty.render(), n => n.props?.role === 'tab')
@@ -2669,9 +2583,9 @@ test('P2 壳层：顶栏品牌与版本徽章、帮助钮与可选关闭钮', ()
 })
 
 test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', () => {
-  // updateInfo 是 Section 状态列表的最后一项（`bump` 之后，索引 27）。
+  // updateInfo 是 Section 状态列表的最后一项（`bump` 之后，索引 26）。
   const harness = loadSectionHarness(async () => {}, {
-    hooks: { 27: { hasUpdate: true, latestVersion: '0.9.9', autoCheckUpdates: true, checkedAt: 1 } },
+    hooks: { 26: { hasUpdate: true, latestVersion: '0.9.9', autoCheckUpdates: true, checkedAt: 1 } },
   })
   const tree = harness.render()
   const hint = findAll(tree, n => n.type === 'span' && textOf(n) === '有新版本 0.9.9')[0]
@@ -2689,34 +2603,21 @@ test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', ()
   )
 })
 
-test('P2 概览：三步引导默认折叠，展开只留在本次挂载', () => {
-  // guideOpen 是 Section 状态列表的第 17 项（0 基索引 17，draft=16 之后）。
-  // 宿主每次打开设置、每次切回概览都会重挂载 Section（SettingsRoot 的
-  // `{open && …}` 与 renderSlot 的 only: active），所以这个初始值就是默认态。
-  // 往 Section 前面插 hook 会让序号错位，改状态列表时一并改这里。
-  const harness = loadSectionHarness(async () => {})
-  const sectionTree = harness.render()
-  assert.equal(harness.hooks[17].value, false, '概览页三步引导应默认折叠')
-  const page = findAll(sectionTree, n => typeof n.type === 'function' && typeof n.props?.onToggleGuide === 'function')[0]
-  assert.equal(Boolean(page), true, '应从 Section 树取到概览页')
-  assert.equal(page.props.guideOpen, false, 'Section 应把折叠态传给概览页')
+test('概览推荐主按钮从真实 Section 直接打开写入确认，不先跳转补丁页', () => {
+  const harness = loadSectionHarness(async () => {}, { status: { preflight: { pendingFiles: 2 } } })
+  const { exported } = harness
+  const page = findAll(harness.render(), n => n.type === exported.OverviewPage)[0]
+  const tree = mount(page)
+  const actionCard = findAll(tree, n => n.type === 'section' && String(n.props?.className).includes('bkl-action-card'))[0]
+  const actionButton = findAll(actionCard, n => n.type === 'button')[0]
+  actionButton.props.onClick({ preventDefault() {} })
 
-  const collapsed = mount(page)
-  assert.equal(findAll(collapsed, n => n.props?.className === 'bkl-guide').length, 0, '折叠态不渲染引导卡')
-  const showLink = findAll(collapsed, n => n.type === 'button' && textOf(n).includes('展开步骤'))[0]
-  assert.equal(Boolean(showLink), true, '折叠态应留一个展开链接')
-
-  showLink.props.onClick({ preventDefault() {} })
-  assert.equal(harness.hooks[17].value, true, '点击展开应把状态置为 true')
-  const reopened = findAll(harness.render(), n => typeof n.type === 'function' && typeof n.props?.onToggleGuide === 'function')[0]
-  assert.equal(reopened.props.guideOpen, true, '翻转后 Section 应把展开态传给概览页')
-  const guide = findAll(mount(reopened), n => n.props?.className === 'bkl-guide')[0]
-  assert.equal(Boolean(guide), true, '展开后应渲染引导卡')
-  const hideLink = findAll(guide, n => n.type === 'button' && textOf(n).includes('收起步骤'))[0]
-  assert.equal(Boolean(hideLink), true, '展开态应留收起链接')
-
-  hideLink.props.onClick({ preventDefault() {} })
-  assert.equal(harness.hooks[17].value, false, '收起应回到折叠')
+  const next = harness.render()
+  const dialog = findAll(next, n => n.type === exported.Dialog && n.props.open === true)[0]
+  assert.equal(Boolean(dialog), true, '主按钮应打开现有写入确认 Dialog')
+  assert.equal(dialog.props.title, '确认写入 2 个宿主源码文件？')
+  const overviewTab = findAll(next, n => n.props?.role === 'tab' && n.props.id === 'bkl-tab-overview')[0]
+  assert.equal(overviewTab.props['aria-selected'], 'true', '确认前仍停留在概览')
 })
 
 test('P2 壳层：帮助 Dialog 标题与三步骤文案来自 TEXT', () => {
@@ -3207,8 +3108,8 @@ test('B8 点列表切换规则过草稿守卫：不丢草稿、不误拉正文�
       // ruleBody 已就位（id 与选中项一致）：规则正文按需加载的 effect 不会再拉。
       // 这也是「正在看 r1 且手上有脏草稿」的真实状态；顺带避开桩内 effect 在
       // render 中途执行时踩到后置 const 的 TDZ（真 React 在 render 后才跑 effect）。
-      20: { id: 'r1', status: 'ok', text: 'body' },
-      18: { id: 'r1', name: '', target: 'AGENTS.md', text: 'new draft', isNew: false, baseline: { id: 'r1', name: '', target: 'AGENTS.md', text: 'old body' } },
+      19: { id: 'r1', status: 'ok', text: 'body' },
+      17: { id: 'r1', name: '', target: 'AGENTS.md', text: 'new draft', isNew: false, baseline: { id: 'r1', name: '', target: 'AGENTS.md', text: 'old body' } },
     },
   })
   const { exported } = harness
@@ -3220,8 +3121,8 @@ test('B8 点列表切换规则过草稿守卫：不丢草稿、不误拉正文�
   assert.equal(ruleButtons.length, 2)
   ruleButtons[1].props.onClick() // 点 Rule Two——手上有脏草稿
   assert.deepEqual(reads(), [], '守卫拦下后不许拉 r2 正文')
-  assert.equal(harness.hooks[18].value.text, 'new draft', '草稿不许被清掉')
-  assert.notEqual(harness.hooks[19].value, 'r2', '选中项不许偷偷切换')
+  assert.equal(harness.hooks[17].value.text, 'new draft', '草稿不许被清掉')
+  assert.notEqual(harness.hooks[18].value, 'r2', '选中项不许偷偷切换')
   const tree2 = harness.render()
   const dialogNode = findAll(tree2, (n) => n.type === exported.Dialog && n.props?.open === true)[0]
   assert.equal(Boolean(dialogNode), true, '应弹出放弃草稿确认')
@@ -3229,8 +3130,8 @@ test('B8 点列表切换规则过草稿守卫：不丢草稿、不误拉正文�
   dialogNode.props.onAccept() // 确认放弃才真正切
   await flushMicrotasks()
   assert.equal(harness.hooks[12].value, null, '确认后弹窗关闭')
-  assert.equal(harness.hooks[18].value, null, '确认后才清草稿')
-  assert.equal(harness.hooks[19].value, 'r2', '确认后才切到 r2')
+  assert.equal(harness.hooks[17].value, null, '确认后才清草稿')
+  assert.equal(harness.hooks[18].value, 'r2', '确认后才切到 r2')
   assert.deepEqual(reads().map((call) => call.url), ['/breaklimit/rules/read?id=r2'], '确认后才拉一次 r2 正文')
 })
 
@@ -3257,7 +3158,7 @@ test('B8 更新弹窗被迟到 render 重开：用户关掉后不再弹开', asy
   const { log, fetch } = deferredFetch()
   const harness = loadSectionHarness(async () => {}, {
     fetch,
-    hooks: { 27: { hasUpdate: false, newer: false, autoCheckUpdates: true, checkedAt: 1 } },
+    hooks: { 26: { hasUpdate: false, newer: false, autoCheckUpdates: true, checkedAt: 1 } },
   })
   const { exported } = harness
   const openDialogs = (tree) => findAll(tree, (n) => n.type === exported.Dialog && n.props?.open === true)
@@ -3296,16 +3197,16 @@ test('B8 自动检查失败显示失败态，不显示『已是最新版本』',
   }
   const view = (extra) => ({ hasUpdate: false, newer: false, autoCheckUpdates: true, checkedAt: 1700000000000, ...extra })
   // 自动检查失败（连不上 GitHub）：如实报失败，不再说「已是最新版本」。
-  const failed = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'update_unreachable' }) } }))
+  const failed = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 26: view({ lastError: 'update_unreachable' }) } }))
   assert.equal(failed.notices.some((n) => n.props?.title === '连不上 GitHub'), true, '应显示失败态')
   assert.equal(failed.text.includes('已是最新版本'), false, '失败时不许说已是最新版本')
   // locked 与 update_invalid 各有其文案。
-  const locked = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'locked' }) } }))
+  const locked = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 26: view({ lastError: 'locked' }) } }))
   assert.equal(locked.notices.some((n) => n.props?.title === '更新状态被其它进程占用'), true)
-  const invalid = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({ lastError: 'update_invalid' }) } }))
+  const invalid = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 26: view({ lastError: 'update_invalid' }) } }))
   assert.equal(invalid.notices.some((n) => n.props?.title === '检查结果无法解析'), true)
   // 对照：没有失败结论时仍是「已是最新版本」，断言本身有判别力。
-  const ok = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 27: view({}) } }))
+  const ok = openUpdateBody(loadSectionHarness(async () => {}, { hooks: { 26: view({}) } }))
   assert.equal(ok.text.includes('已是最新版本'), true)
   assert.equal(ok.notices.length, 0)
 })
@@ -3346,7 +3247,7 @@ test('规则保存只清理已提交版本，保存期间的新修改与其他�
     const rule = { id: 'r', name: 'r', target: 'AGENTS.md' }
     const edit = { isNew: false, ...rule, text: 'submitted', baseline: { ...rule, text: 'before' } }
     const h = loadSectionHarness(async () => {}, {
-      hooks: { 0: 'rules', 18: edit, 20: { id: 'r', status: 'ok', text: 'before' } },
+      hooks: { 0: 'rules', 17: edit, 19: { id: 'r', status: 'ok', text: 'before' } },
       status: { rules: [rule], activeRule: null },
       fetch: (_url, init) => init?.method === 'POST' ? new Promise(resolve => { reply = resolve }) : new Promise(() => {}),
     })
@@ -3358,7 +3259,7 @@ test('规则保存只清理已提交版本，保存期间的新修改与其他�
     }
     reply({ ok: true, status: 200, json: async () => ({ ok: true, code: 'saved', data: rule }) })
     await flushMicrotasks()
-    const remaining = h.hooks[18].value
+    const remaining = h.hooks[17].value
     if (change === null) assert.equal(remaining, null)
     else {
       for (const [key, value] of Object.entries(change)) assert.equal(remaining?.[key], value)
@@ -3370,7 +3271,7 @@ test('规则保存只清理已提交版本，保存期间的新修改与其他�
 test('取消激活被保留时明确显示仍生效，中英文都不能显示取消成功', async () => {
   for (const lang of ['zh-CN', 'en']) {
     const rule = { id: 'r', name: 'r', target: 'AGENTS.md' }
-    const h = loadSectionHarness(async () => {}, { lang, hooks: { 0: 'rules', 20: { id: 'r', status: 'ok', text: 'body' } },
+    const h = loadSectionHarness(async () => {}, { lang, hooks: { 0: 'rules', 19: { id: 'r', status: 'ok', text: 'body' } },
       status: { rules: [rule], activeRule: 'r' },
       fetch: (_url, init) => init?.method === 'POST'
         ? Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, code: 'deactivate_kept', data: { kept: true, active: true, skipped: [{ path: 'AGENTS.md' }] } }) })
@@ -3393,7 +3294,7 @@ test('保存在途时编辑器换成同 id 的另一次读取，迟到响应不�
     baseline: { isNew: true, id: 'r', name: 'r', target: 'AGENTS.md', text: 'submitted' },
   }
   const h = loadSectionHarness(async () => {}, {
-    hooks: { 0: 'rules', 18: edit, 20: { id: 'r', status: 'ok', text: 'submitted' } },
+    hooks: { 0: 'rules', 17: edit, 19: { id: 'r', status: 'ok', text: 'submitted' } },
     status: { rules: [], activeRule: null },
     fetch: (_url, init) => init?.method === 'POST'
       ? new Promise(resolve => { replySave = resolve })
@@ -3406,10 +3307,10 @@ test('保存在途时编辑器换成同 id 的另一次读取，迟到响应不�
   block.props.onEdit('r'); await flushMicrotasks()
   replyRead({ ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', data: { name: '', target: 'AGENTS.md', text: 'refetched' } }) })
   await flushMicrotasks()
-  assert.equal(h.hooks[18].value.text, 'refetched')
+  assert.equal(h.hooks[17].value.text, 'refetched')
   replySave({ ok: true, status: 200, json: async () => ({ ok: true, code: 'saved', data: rule }) })
   await flushMicrotasks()
-  const after = h.hooks[18].value
+  const after = h.hooks[17].value
   assert.equal(after.text, 'refetched', '迟到响应不许把保存前的内容换回来')
   assert.equal(after.baseline.text, 'refetched', 'baseline 不许标成刚提交的版本')
   const notice = h.hooks[14].value.rules
