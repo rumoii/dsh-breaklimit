@@ -573,7 +573,8 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
       const snapshotRead = readBytesStrict(snapshotPath(dir, target))
       const snapshot = snapshotRead.kind === 'ok' ? snapshotRead.bytes : null
       if (snapshot === null) {
-        drifted.push({ path: target, reason: '快照缺失，无法恢复' })
+        snapshotCorrupt = true
+        drifted.push({ path: target, kind: 'snapshot', reason: snapshotRead.kind === 'missing' ? '快照缺失，无法恢复' : '快照不可读，无法恢复' })
         continue
       }
       // 恢复的唯一依据就是这份快照，它自己也得对得上记录里的 before。只判断存在，
@@ -581,13 +582,13 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
       // 一旦写回去，宿主上就多了一份没人声明过的内容。
       if (hashText(snapshot) !== record.before) {
         snapshotCorrupt = true
-        drifted.push({ path: target, reason: '快照内容与记录不符，拒绝恢复' })
+        drifted.push({ path: target, kind: 'snapshot', reason: '快照内容与记录不符，拒绝恢复' })
         continue
       }
       const currentRead = readBytesStrict(path.join(root, target))
       const current = currentRead.kind === 'ok' ? currentRead.bytes : null
       if (current === null) {
-        drifted.push({ path: target, reason: '文件已不存在' })
+        drifted.push({ path: target, kind: 'target', reason: '文件已不存在' })
         continue
       }
       const now = hashText(current)
@@ -602,15 +603,20 @@ export function revertPatches({ root, home, lock = sharedLock, writeFile = atomi
         alreadyReverted.push(target)
         continue
       }
-      drifted.push({ path: target, reason: '内容既非应用后版本也非应用前版本' })
+      drifted.push({ path: target, kind: 'target', reason: '内容既非应用后版本也非应用前版本' })
     }
 
     if (drifted.length > 0) {
+      const snapshotCount = drifted.filter(item => item.kind === 'snapshot').length
+      const targetCount = drifted.length - snapshotCount
+      const summary = targetCount > 0
+        ? `${String(snapshotCount)} 个快照故障、${String(targetCount)} 个目标漂移`
+        : `${String(snapshotCount)} 个目标无法安全恢复（快照缺失、不可读或与记录不符）`
       return {
         ok: false,
         code: snapshotCorrupt ? 'snapshot_corrupt' : 'drift_detected',
         message: snapshotCorrupt
-          ? `检测到 ${String(drifted.length)} 个目标无法安全恢复（快照缺失或与记录不符），已整体拒绝回退，磁盘未被改动。`
+          ? `检测到 ${summary}，已整体拒绝回退，磁盘未被改动。可运行 node tools/rebuild-state.mjs <宿主根> 重建恢复记录。`
           : `检测到 ${String(drifted.length)} 个文件漂移，已整体拒绝回退，磁盘未被改动。`,
         operationId,
         drifted,

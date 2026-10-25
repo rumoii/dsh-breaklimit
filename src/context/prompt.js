@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readTextOrNull } from '../patch/fsx.js'
-import { DEFAULT_TIER, TIERS, readTier } from './tiers.js'
+import { DEFAULT_TIER, TIERS, readTier, tierConfigPath } from './tiers.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -27,7 +27,8 @@ export function promptMode(mode) {
 export function readMode(home, runtime) {
   const result = readTier(home, runtime)
   if (result.source === 'unavailable') {
-    const error = new Error('档位配置不可用，已暂停操作；修复后重试。')
+    const file = tierConfigPath(home)
+    const error = new Error(`档位配置不可用，已暂停操作；请修复 ${file}，或运行 breaklimit --tier recommended 后重试。`)
     error.code = 'tier_config_unavailable'
     throw error
   }

@@ -22,7 +22,7 @@ export const STATE_VERSION = 2
 /** DSH_HOME，解析规则与宿主自身一致。 */
 export function resolveHome(env = process.env) {
   const fromEnv = env.DSH_HOME
-  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv.trim()
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return path.resolve(fromEnv.trim())
   return path.join(os.homedir(), '.dsh')
 }
 

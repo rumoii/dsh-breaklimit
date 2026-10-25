@@ -89,3 +89,27 @@ test('词表不可读可用同实例快照但必须报告错误，冷实例没�
   assert.ok(cached.error)
   assert.equal(readMasks(home, {}).unavailable, true)
 })
+
+test('部分词条无效时保留合法项并报告降级，冷实例也可使用', () => {
+  const home = tempHome(), runtime = {}
+  fs.writeFileSync(masksPath(home), JSON.stringify({ entries: [
+    { from: 'REAL', to: 'ALIAS' },
+    { from: '', to: 'INVALID' },
+  ] }))
+  const degraded = readMasks(home, runtime)
+  assert.deepEqual(degraded.entries, [{ from: 'REAL', to: 'ALIAS' }])
+  assert.equal(degraded.unavailable, false)
+  assert.match(degraded.error, /无效/u)
+  fs.writeFileSync(masksPath(home), '{broken')
+  const cached = readMasks(home, runtime)
+  assert.deepEqual(cached.entries, degraded.entries)
+  assert.equal(cached.source, 'cached')
+})
+
+test('全部词条无效时不把空表当成可信配置', () => {
+  const home = tempHome()
+  fs.writeFileSync(masksPath(home), JSON.stringify({ entries: [{ from: '', to: 'INVALID' }] }))
+  const read = readMasks(home, {})
+  assert.deepEqual(read.entries, [])
+  assert.equal(read.unavailable, true)
+})

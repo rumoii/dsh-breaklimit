@@ -250,6 +250,8 @@ test('HTTP 成功但 effective 读取失败时，正文仍未知且所有覆盖�
   const textarea = findAll(tree, n => n.type === 'textarea')[0]
   assert.equal(textarea.props.readOnly, true)
   assert.equal(textarea.props['aria-invalid'], 'true')
+  assert.match(textOf(tree), /current turn fails/u)
+  assert.doesNotMatch(textOf(tree), /gets an empty body/u)
   for (const label of ['Save', 'Restore built-in', 'Copy all']) {
     const button = findAll(tree, n => n.type === 'button').find(n => textOf(n).includes(label))
     assert.equal(button.props['aria-disabled'], 'true')
@@ -2920,6 +2922,33 @@ test('A5 explain：bad_response 有独立标题与下一步（中英两套），
   const notice2 = findAll(writeFailed.render(), n => n.type === writeFailed.exported.Notice && n.props?.notice?.code === 'write_failed')[0]
   assert.equal(Boolean(notice2), true, '错误信封的 code 应原样透出到 explain')
   assert.equal(notice2.props.notice.title, '写不进磁盘', 'write_failed 仍翻成 errWrite 文案')
+
+  const snapshot = loadSectionHarness(async () => {}, {
+    hooks: { 1: null },
+    fetch: async () => ({ ok: false, status: 400, json: async () => ({ ok: false, code: 'snapshot_corrupt', message: '', data: { drifted: [
+      { path: 'a.txt', kind: 'snapshot', reason: '快照缺失，无法恢复' },
+      { path: 'b.txt', kind: 'target', reason: '内容既非应用后版本也非应用前版本' },
+    ] } }) }),
+  })
+  snapshot.render()
+  await flushMicrotasks()
+  const snapshotNotice = findAll(snapshot.render(), n => n.type === snapshot.exported.Notice && n.props?.notice?.code === 'snapshot_corrupt')[0]
+  assert.equal(Boolean(snapshotNotice), true, '快照损坏必须有独立反馈，不能落入未知错误')
+  assert.equal(snapshotNotice.props.notice.title, '恢复快照缺失、不可读或已损坏')
+  assert.match(snapshotNotice.props.notice.next, /rebuild-state\.mjs/u)
+  assert.deepEqual(snapshotNotice.props.notice.items, [
+    '快照故障 · a.txt · 快照缺失，无法恢复',
+    '目标漂移 · b.txt · 内容既非应用后版本也非应用前版本',
+  ])
+
+  const englishSnapshot = loadSectionHarness(async () => {}, {
+    lang: 'en', hooks: { 1: null },
+    fetch: async () => ({ ok: false, status: 400, json: async () => ({ ok: false, code: 'snapshot_corrupt', message: '', data: { drifted: [{ path: 'a.txt', kind: 'snapshot', reason: 'snapshot missing' }] } }) }),
+  })
+  englishSnapshot.render()
+  await flushMicrotasks()
+  const englishNotice = findAll(englishSnapshot.render(), n => n.type === englishSnapshot.exported.Notice && n.props?.notice?.code === 'snapshot_corrupt')[0]
+  assert.deepEqual(englishNotice.props.notice.items, ['Snapshot fault · a.txt · snapshot missing'])
 })
 
 // ---- B8 前端缺陷回归 -------------------------------------------------------

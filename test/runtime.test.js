@@ -125,7 +125,12 @@ test('readMode 缺文件用默认，损坏且无可信快照时拒绝操作', ()
   const file = path.join(home, 'breaklimit', 'tier.json')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, '{ broken', 'utf8')
-  assert.throws(() => readMode(home), { code: 'tier_config_unavailable' })
+  assert.throws(() => readMode(home), (error) => {
+    assert.equal(error.code, 'tier_config_unavailable')
+    assert.equal(error.message.includes(file), true)
+    assert.match(error.message, /breaklimit --tier recommended/u)
+    return true
+  })
   fs.writeFileSync(file, JSON.stringify({ tier: 'unrestricted' }), 'utf8')
   assert.equal(readMode(home), 'unrestricted')
 })

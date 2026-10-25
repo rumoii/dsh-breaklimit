@@ -1,9 +1,13 @@
 // 预算提交的两条边界：只覆盖预算键（没有既有 config 时按空对象合并），
 // 以及同后缀条目必须唯一且启用。全部用假宿主，不碰真实 Loader，也不对真实宿主提交预算。
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
-import { MODE_BUDGETS, applyModeBudget, recheckBudget } from '../src/host/capabilities.js'
+import { MODE_BUDGETS, applyModeBudget, ensureModeBudget, readRuntimeLimits, recheckBudget } from '../src/host/capabilities.js'
+import { writeTier } from '../src/context/tiers.js'
 
 // 必须是本文件的第一个用例：提交状态是模块级单例，前面一旦提交过，这里就不再是「没提交」。
 test('复核：没有提交记录时返回 null', () => {
@@ -165,4 +169,51 @@ test('复核：读到值与目标不符时转进 mismatched', async () => {
   const checked = recheckBudget(wrong)
   assert.deepEqual(checked.unverified, [])
   assert.match(checked.mismatched[0], /maxDepth/u)
+})
+
+test('补交失败不记成功，loader 恢复后同档仍会重试', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-budget-retry-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+  writeTier(home, 'unrestricted')
+  const entries = []
+  const calls = []
+  const configs = {}
+  const ctx = {
+    root: { loader: { resolve() { throw new Error('absent') }, entries: () => entries } },
+    get(name) {
+      const config = name === 'shell' ? configs['pwsh-sandbox'] : configs.subagent
+      return config ? { config: Object.fromEntries(Object.entries(config).map(([key, value]) => [key, { get: () => value }])) } : undefined
+    },
+  }
+  const runtime = {}
+  ensureModeBudget(ctx, 'unrestricted', MODE_BUDGETS, runtime)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(runtime.budgetSubmittedMode, undefined, '全部跳过不得记为已提交')
+  assert.equal(runtime.configError, 'budget_apply_unconfirmed')
+
+  for (const id of ['bash-sandbox', 'pwsh-sandbox', 'subagent']) {
+    entries.push({
+      id: `host:${id}`,
+      disabled: false,
+      options: { config: {} },
+      async update(options) {
+        calls.push(id)
+        configs[id] = options.config
+      },
+    })
+  }
+  ensureModeBudget(ctx, 'unrestricted', MODE_BUDGETS, runtime)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.length, 3, 'loader 恢复后同档必须重新提交')
+  assert.equal(runtime.budgetSubmittedMode, 'unrestricted')
+  assert.deepEqual(readRuntimeLimits(ctx), {
+    shell: { timeoutMs: MODE_BUDGETS.unrestricted.timeoutMs, maxTimeoutMs: MODE_BUDGETS.unrestricted.maxTimeoutMs, maxOutputBytes: MODE_BUDGETS.unrestricted.maxOutputBytes },
+    subagents: { maxDepth: MODE_BUDGETS.unrestricted.maxDepth },
+  })
 })

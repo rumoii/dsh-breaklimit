@@ -1024,7 +1024,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       confirmResetYes: "删除并恢复内置",
       donePromptSaved: (s) => `已保存（${String(s)}）`,
       donePromptReset: "已恢复内置正文",
-      injectBad: (c) => (c === "inject_too_large" ? "正文文件超过大小上限，宿主现在拿到的是空正文。" : c === "inject_not_file" ? "正文路径不是一个文件，宿主现在拿到的是空正文。" : "正文文件读不出来，宿主现在拿到的是空正文。"),
+      injectBad: (c) => (c === "inject_too_large" ? "正文文件超过大小上限，当前对话轮次会失败，不会注入空正文或截断正文。" : c === "inject_not_file" ? "正文路径不是一个文件，当前对话轮次会失败，不会回落到内置正文。" : "正文文件读不出来，当前对话轮次会失败，不会注入空正文。"),
       injectBadNext: "请在原文件中修复读取问题或缩减正文，再重新读取。",
 
       rulesTitle: "规则",
@@ -1110,6 +1110,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       errBusyNext: "等它结束后点「重新检查」。",
       errDrift: (n) => `${String(n)} 个文件被别的程序改过，回退已整体取消`,
       errDriftNext: "磁盘没有被改动。先把这些文件恢复原样（或重新安装宿主），再回退。",
+      errSnapshot: "恢复快照缺失、不可读或已损坏",
+      errSnapshotNext: "磁盘没有被改动。保留 breaklimit 文件夹，运行 node tools/rebuild-state.mjs <宿主根> 重建恢复记录后再回退。",
+      snapshotKindSnapshot: "快照故障",
+      snapshotKindTarget: "目标漂移",
       errNotApplied: "没有应用记录，不需要回退",
       errNotAppliedNext: "宿主文件没有被插件改过。",
       errWriteHalf: "写到一半失败了，插件已尝试撤回",
@@ -1834,7 +1838,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       confirmResetYes: "Delete and restore",
       donePromptSaved: (s) => `Saved (${String(s)})`,
       donePromptReset: "Built-in body restored",
-      injectBad: (c) => (c === "inject_too_large" ? "The body file is over the size limit, so the host currently gets an empty body." : c === "inject_not_file" ? "The body path is not a file, so the host currently gets an empty body." : "The body file cannot be read, so the host currently gets an empty body."),
+      injectBad: (c) => (c === "inject_too_large" ? "The body file is over the size limit; the current turn fails instead of receiving a truncated or empty body." : c === "inject_not_file" ? "The body path is not a file; the current turn fails without falling back to the built-in body." : "The body file cannot be read; the current turn fails instead of receiving an empty body."),
       injectBadNext: "Fix access to the original file or shorten it there, then read it again.",
 
       rulesTitle: "Rules",
@@ -1920,6 +1924,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       errBusyNext: "Wait for it to finish, then press Check again.",
       errDrift: (n) => `${String(n)} ${Number(n) === 1 ? "file was" : "files were"} changed by another program, so the revert was cancelled`,
       errDriftNext: "Nothing on disk changed. Restore these files (or reinstall the host) first, then revert.",
+      errSnapshot: "Recovery snapshots are missing, unreadable, or damaged",
+      errSnapshotNext: "Nothing on disk changed. Keep the breaklimit folder, run node tools/rebuild-state.mjs <host-root> to rebuild the recovery record, then revert.",
+      snapshotKindSnapshot: "Snapshot fault",
+      snapshotKindTarget: "Target drift",
       errNotApplied: "There is no apply record, so nothing to revert",
       errNotAppliedNext: "The plugin has not changed any host files.",
       errWriteHalf: "Writing failed halfway; the plugin tried to roll back",
@@ -2468,6 +2476,10 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       case "drift_detected":
         return make(T.errDrift(count(data?.drifted)), T.errDriftNext, null, {
           items: Array.isArray(data?.drifted) ? data.drifted.map(item => String(item?.path ?? "")) : [],
+        })
+      case "snapshot_corrupt":
+        return make(T.errSnapshot, T.errSnapshotNext, null, {
+          items: Array.isArray(data?.drifted) ? data.drifted.map(item => `${item?.kind === "snapshot" ? T.snapshotKindSnapshot : T.snapshotKindTarget} · ${String(item?.path ?? "")} · ${String(item?.reason ?? "")}`) : [],
         })
       case "not_applied": return make(T.errNotApplied, T.errNotAppliedNext, null, { tone: "info" })
       case "apply_failed":

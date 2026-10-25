@@ -12,8 +12,10 @@ import { PATCHES } from '../src/patch/index.js'
 import { writeDisabled } from '../src/patch/patch-selection.js'
 import { applyPatches } from '../src/patch/transaction.js'
 import { hashText } from '../src/patch/fsx.js'
+import { readRuntimeLimits, switchTier } from '../src/host/capabilities.js'
+import { tierConfigPath, writeTier } from '../src/context/tiers.js'
 
-function fixture(t) {
+function fixture(t, beforeApply, config = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-entrypoints-'))
   const home = path.join(dir, 'home')
   const root = path.join(dir, 'host')
@@ -27,9 +29,10 @@ function fixture(t) {
   })
   const commands = new Map()
   const tools = new Map()
+  const handlers = new Map()
   let handler
   const ctx = {
-    on() {},
+    on(event, listener) { handlers.set(event, listener) },
     get() { return undefined },
     systemPrompt: { section() {} },
     inject(names, callback) {
@@ -41,8 +44,9 @@ function fixture(t) {
       })
     },
   }
-  apply(ctx, { hostRoot: root })
-  return { home, root, commands, tools, handler }
+  beforeApply?.(ctx, home)
+  apply(ctx, { ...config, hostRoot: root })
+  return { home, root, commands, tools, handler, handlers, ctx }
 }
 
 async function request(handler, method, route, body = {}) {
@@ -114,4 +118,99 @@ test('CLI 回退依据事务记录，不受之后禁用全部补丁影响', (t) 
   const reverted = cli(['--host-root', root, '--revert'], { DSH_HOME: home })
   assert.equal(reverted.code, 0)
   assert.equal(fs.readFileSync(path.join(root, target), 'utf8'), before)
+})
+
+test('冷启动档位故障修复后，真实装配补交同档预算并避免重复提交', async (t) => {
+  const budgets = {
+    recommended: { timeoutMs: 1111000, maxTimeoutMs: 1111000, maxOutputBytes: 111111, maxDepth: 1 },
+    unrestricted: { timeoutMs: 2222000, maxTimeoutMs: 2222000, maxOutputBytes: 222222, maxDepth: 7 },
+  }
+  const calls = []
+  const configs = {}
+  let releaseFirst
+  const first = new Promise(resolve => { releaseFirst = resolve })
+  const { home, handlers, ctx } = fixture(t, (ctx, home) => {
+    fs.mkdirSync(path.dirname(tierConfigPath(home)), { recursive: true })
+    fs.writeFileSync(tierConfigPath(home), '{broken')
+    const entries = ['bash-sandbox', 'pwsh-sandbox', 'subagent'].map(id => ({
+      id: `host:${id}`,
+      disabled: false,
+      options: { config: {} },
+      async update(options) {
+        calls.push(id)
+        if (calls.length === 1) await first
+        configs[id] = options.config
+      },
+    }))
+    ctx.root = { loader: { resolve() { throw new Error('absent') }, entries: () => entries } }
+    ctx.get = name => {
+      const config = name === 'shell' ? configs['pwsh-sandbox'] : configs.subagent
+      return config ? { config: Object.fromEntries(Object.entries(config).map(([key, value]) => [key, { get: () => value }])) } : undefined
+    }
+  }, { budgets })
+  assert.deepEqual(calls, [], '冷启动配置不可信时不提交猜测档位')
+
+  writeTier(home, 'unrestricted')
+  const assembly = { sections: [], contexts: [], tools: [], variables: {} }
+  const assemble = () => handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly)
+  await Promise.all([assemble(), assemble()])
+  const concurrentCalls = calls.length
+  writeTier(home, 'recommended')
+  await Promise.all([assemble(), assemble()])
+  assert.equal(calls.length, concurrentCalls, '进行中和已排队档位的重复读取都不能增加提交')
+  releaseFirst()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(concurrentCalls, 1, '同一进行中的补提交必须去重')
+  assert.equal(calls.length, 6, '提交期间读到的新档位必须排在后面并收敛到最新值')
+  assert.deepEqual(readRuntimeLimits(ctx), {
+    shell: { timeoutMs: 1111000, maxTimeoutMs: 1111000, maxOutputBytes: 111111 },
+    subagents: { maxDepth: 1 },
+  })
+})
+
+test('连续显式切档与装配竞态最终按最新档位提交', async (t) => {
+  const budgets = {
+    recommended: { timeoutMs: 1111000, maxTimeoutMs: 1111000, maxOutputBytes: 111111, maxDepth: 1 },
+    unrestricted: { timeoutMs: 2222000, maxTimeoutMs: 2222000, maxOutputBytes: 222222, maxDepth: 7 },
+  }
+  const calls = []
+  const configs = {}
+  let releaseFirst, enteredFirst
+  const first = new Promise(resolve => { releaseFirst = resolve })
+  const started = new Promise(resolve => { enteredFirst = resolve })
+  const { home, handlers, ctx } = fixture(t, (ctx, home) => {
+    fs.mkdirSync(path.dirname(tierConfigPath(home)), { recursive: true })
+    fs.writeFileSync(tierConfigPath(home), '{broken')
+    const entries = ['bash-sandbox', 'pwsh-sandbox', 'subagent'].map(id => ({
+      id: `host:${id}`,
+      disabled: false,
+      options: { config: {} },
+      async update(options) {
+        calls.push(id)
+        if (calls.length === 1) { enteredFirst(); await first }
+        configs[id] = options.config
+      },
+    }))
+    ctx.root = { loader: { resolve() { throw new Error('absent') }, entries: () => entries } }
+    ctx.get = name => {
+      const config = name === 'shell' ? configs['pwsh-sandbox'] : configs.subagent
+      return config ? { config: Object.fromEntries(Object.entries(config).map(([key, value]) => [key, { get: () => value }])) } : undefined
+    }
+  }, { budgets })
+
+  const unrestricted = switchTier(ctx, home, 'unrestricted', budgets)
+  const recommended = switchTier(ctx, home, 'recommended', budgets)
+  await started
+  const assembly = { sections: [], contexts: [], tools: [], variables: {} }
+  await handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly)
+  releaseFirst()
+  await Promise.all([unrestricted, recommended])
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(JSON.parse(fs.readFileSync(tierConfigPath(home), 'utf8')).tier, 'recommended')
+  assert.equal(calls.length, 9, '两次显式切档与一次装配补交都应完成')
+  assert.deepEqual(readRuntimeLimits(ctx), {
+    shell: { timeoutMs: 1111000, maxTimeoutMs: 1111000, maxOutputBytes: 111111 },
+    subagents: { maxDepth: 1 },
+  }, '排队中的旧档位不得最后覆盖最新档位')
 })

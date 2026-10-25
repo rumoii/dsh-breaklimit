@@ -61,19 +61,31 @@ export function readMasks(home, runtime) {
   const file = masksPath(home)
   const read = readBytesStrict(file)
   let result
-  if (read.kind === 'missing') result = { entries: [], error: null }
-  else if (read.kind === 'unreadable') result = { entries: [], error: '词表文件读不到，未按空表处理。' }
+  let trusted = false
+  if (read.kind === 'missing') {
+    result = { entries: [], error: null }
+    trusted = true
+  } else if (read.kind === 'unreadable') result = { entries: [], error: '词表文件读不到，未按空表处理。' }
   else {
     try {
       const parsed = JSON.parse(decodeUtf8(read.bytes))
       const raw = Array.isArray(parsed) ? parsed : parsed?.entries
-      if (!Array.isArray(raw) || raw.length > MAX_MASKS || raw.some(entry => !validEntry(entry))) throw new Error('invalid entries')
-      result = { entries: normalizeEntries(raw), error: null }
+      if (!Array.isArray(raw) || raw.length > MAX_MASKS) throw new Error('invalid entries')
+      const entries = normalizeEntries(raw)
+      const invalid = raw.some(entry => !validEntry(entry))
+      if (raw.length > 0 && entries.length === 0) {
+        result = { entries: [], error: '词表词条全部无效，未按空表处理。' }
+      } else {
+        result = invalid
+          ? { entries, error: '部分词条无效，已忽略并继续使用合法词条。', unavailable: false }
+          : { entries, error: null }
+        trusted = true
+      }
     } catch {
-      result = { entries: [], error: '词表文件不是合法 JSON 或词条无效，未按空表处理。' }
+      result = { entries: [], error: '词表文件不是合法 JSON 或结构无效，未按空表处理。' }
     }
   }
-  if (result.error === null) {
+  if (trusted) {
     if (runtime) runtime.maskSnapshot = { file, entries: result.entries }
     return result
   }

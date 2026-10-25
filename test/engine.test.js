@@ -15,7 +15,7 @@ import { atomicWrite, hashText } from '../src/patch/fsx.js'
 import { createLock } from '../src/patch/lock.js'
 import { countOccurrences, declarationFingerprint, preflight } from '../src/patch/preflight.js'
 import { applyPatches, pruneTransactions, revertPatches } from '../src/patch/transaction.js'
-import { transactionsDir } from '../src/patch/state.js'
+import { readState, resolveHome, transactionsDir } from '../src/patch/state.js'
 import { PATCHES } from '../src/patch/index.js'
 
 function tempDir() {
@@ -389,6 +389,25 @@ test('记录版本不符时拒绝执行', () => {
   assert.equal(result.code, 'state_version_mismatch')
 })
 
+test('相对 DSH_HOME 解析为绝对路径，事务写入后可读回并回退', () => {
+  const dir = tempDir()
+  const previous = process.cwd()
+  try {
+    process.chdir(dir)
+    const home = resolveHome({ DSH_HOME: 'home' })
+    const root = path.join(dir, 'root')
+    assert.equal(path.isAbsolute(home), true)
+    write(root, 'a.txt', 'VALUE = 2000\n')
+    const patches = [replacePatch([{ path: 'a.txt', before: 'VALUE = 2000', after: 'VALUE = 20000', expectHits: 1 }])]
+    assert.equal(apply(root, home, patches).code, 'applied')
+    assert.equal(readState(home).kind, 'ok')
+    assert.equal(revertPatches({ root, home }).ok, true)
+    assert.equal(read(root, 'a.txt'), 'VALUE = 2000\n')
+  } finally {
+    process.chdir(previous)
+  }
+})
+
 test('快照缺失时 Revert 整体拒绝，磁盘不被改动', () => {
   const root = tempDir()
   const home = tempDir()
@@ -402,8 +421,35 @@ test('快照缺失时 Revert 整体拒绝，磁盘不被改动', () => {
 
   const back = revertPatches({ root, home, lock })
   assert.equal(back.ok, false)
-  assert.equal(back.code, 'drift_detected')
+  assert.equal(back.code, 'snapshot_corrupt')
+  assert.match(back.message, /rebuild-state\.mjs/u)
   assert.equal(read(root, 'a.txt'), 'VALUE = 20000\n')
+})
+
+test('快照故障与目标漂移混合时分别报告，磁盘不被改动', () => {
+  const root = tempDir()
+  const home = tempDir()
+  write(root, 'a.txt', 'A1\n')
+  write(root, 'b.txt', 'B1\n')
+  const patches = [replacePatch([
+    { path: 'a.txt', before: 'A1', after: 'A2', expectHits: 1 },
+    { path: 'b.txt', before: 'B1', after: 'B2', expectHits: 1 },
+  ])]
+  const lock = createLock()
+  assert.equal(apply(root, home, patches, { lock }).code, 'applied')
+  const state = JSON.parse(read(home, 'breaklimit/state.json'))
+  fs.rmSync(path.join(state.transaction, 'files', 'a.txt'), { force: true })
+  write(root, 'b.txt', 'B-EXTERNAL\n')
+
+  const back = revertPatches({ root, home, lock })
+  assert.equal(back.ok, false)
+  assert.equal(back.code, 'snapshot_corrupt')
+  assert.match(back.message, /1 个快照故障、1 个目标漂移/u)
+  assert.deepEqual(back.drifted.map(item => item.kind), ['snapshot', 'target'])
+  assert.match(back.drifted[0].reason, /快照缺失/u)
+  assert.match(back.drifted[1].reason, /内容既非应用后版本也非应用前版本/u)
+  assert.equal(read(root, 'a.txt'), 'A2\n')
+  assert.equal(read(root, 'b.txt'), 'B-EXTERNAL\n')
 })
 
 test('预哈希不符时阻断，不写入任何文件', () => {

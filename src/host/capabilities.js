@@ -1,4 +1,6 @@
 import { writeTier } from '../context/tiers.js'
+import { readMode } from '../context/prompt.js'
+import { resolveHome } from '../patch/state.js'
 // 执行层预算：两档取值、运行时写入、以及实测读数。
 //
 // 写入走宿主 Loader 的公开 API——`loader.resolve(id).update({ config })`。当变更只
@@ -287,6 +289,34 @@ function serializeBudget(ctx, run) {
 
 export function applyModeBudget(ctx, mode, budgets = MODE_BUDGETS) {
   return serializeBudget(ctx, () => submitBudget(ctx, mode, budgets))
+}
+
+/** 成功读到档位后补交执行预算；同一目标去重，实际提交时重读最新档位。 */
+export function ensureModeBudget(ctx, mode, budgets, runtime) {
+  if (!runtime.budgetSubmission && runtime.budgetSubmittedMode === mode) return
+  if (runtime.budgetSubmission && runtime.budgetRequestedMode === mode) return
+  const submit = () => serializeBudget(ctx, () => submitBudget(ctx, readMode(resolveHome(), runtime), budgets))
+  const submission = runtime.budgetSubmission
+    ? runtime.budgetSubmission.then(submit, submit)
+    : submit()
+  runtime.budgetRequestedMode = mode
+  runtime.budgetSubmission = submission
+  void submission.then((budget) => {
+    if (runtime.budgetSubmission !== submission) return
+    runtime.budgetRequestedMode = null
+    runtime.budgetSubmission = null
+    const failures = budget.skipped.filter(reason => !reason.endsWith('条目已禁用'))
+    if (failures.length > 0 || budget.mismatched.length > 0) {
+      runtime.configError = 'budget_apply_unconfirmed'
+      return
+    }
+    runtime.budgetSubmittedMode = budget.mode
+  }, (error) => {
+    if (runtime.budgetSubmission !== submission) return
+    runtime.budgetRequestedMode = null
+    runtime.budgetSubmission = null
+    runtime.configError = error?.code ?? 'budget_apply_failed'
+  })
 }
 
 /** 档位持久化与预算提交串行完成；结果不等同于预算已生效。 */

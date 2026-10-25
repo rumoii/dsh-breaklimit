@@ -1,10 +1,11 @@
 // 宿主运行时接缝：执行档位、审批分流、文件编辑与提示词装配。
 import { readInject } from '../context/inject-file.js'
-import { readMasks, maskText } from './masks.js'
+import { readMasks, maskText, masksPath } from './masks.js'
 import { resolveHome } from '../patch/state.js'
 import { readMode, readModeExtension, readTail } from '../context/prompt.js'
 import * as rules from '../context/rules.js'
 import { buildTierPrompt } from '../context/tiers.js'
+import { ensureModeBudget, resolveBudgets } from './capabilities.js'
 
 const FULL_ACCESS = 'danger-full-access'
 const ESCALATION_REASON_PREFIX = 'escalate sandbox to '
@@ -96,7 +97,12 @@ function maskStepMessages(decision, runtime) {
   if (decision?.kind !== 'enter' || !Array.isArray(decision.messages)) return decision
   const masks = readMasks(resolveHome(), runtime)
   runtime.maskRead = { error: masks.error, source: masks.source ?? 'disk' }
-  if (masks.unavailable) return { kind: 'reject' }
+  if (masks.unavailable) {
+    const file = masksPath(resolveHome())
+    const error = new Error(`词表配置不可用，已暂停本次请求；请编辑 ${file} 修复词表后重试。`)
+    error.code = 'mask_config_unavailable'
+    throw error
+  }
   const { entries } = masks
   if (entries.length === 0) return decision
   let touched = false
@@ -237,17 +243,20 @@ function sameMarkers(left, right) {
 }
 
 export function registerSeams(ctx, config, runtime, order) {
-  /** 解析头部注入文本：共用正文 + 当前模式的附加段 + 激活中的规则。读不出来时返回空串让装配继续，错误已经记进状态。 */
+  /** 解析头部注入文本：共用正文 + 当前模式的附加段 + 激活中的规则。正文未知时停止装配，不拿内置或空正文替代。 */
   const injectText = () => {
     if (!runtime.enabled) return ''
     const home = resolveHome()
     const loaded = readInject(config)
     if (!loaded.ok) {
       runtime.configError = loaded.code
-      throw new Error(`提示词正文不可用：${loaded.code}`)
+      const error = new Error(loaded.message)
+      error.code = loaded.code
+      throw error
     }
     const base = loaded.text
     const mode = readMode(home, runtime)
+    ensureModeBudget(ctx, mode, resolveBudgets(config), runtime)
     runtime.configError = null
     const tieredBase = buildTierPrompt(mode, base, readModeExtension(mode))
     // 激活中的规则是第二条注入通道。它同时写进了 $DSH_HOME 的落点文件，供宿主

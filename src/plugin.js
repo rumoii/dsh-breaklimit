@@ -2,7 +2,7 @@
 import { resolveHome } from './patch/state.js'
 import { ensureInitialState } from './context/rules.js'
 import { registerSeams } from './host/seams.js'
-import { applyModeBudget, resolveBudgets } from './host/capabilities.js'
+import { ensureModeBudget, resolveBudgets } from './host/capabilities.js'
 import { promptMode, readMode } from './context/prompt.js'
 import { registerCommands } from './host/commands.js'
 import { registerTools } from './host/tools.js'
@@ -53,7 +53,7 @@ export function apply(ctx, config = {}) {
   // 执行层预算随模式提交：走 Loader 的 volatile 提交，条件不成立时会退回静态基线。
   // 预算值来自配置里的 budgets，缺省用内置两档。
   try {
-    void applyModeBudget(ctx, readMode(resolveHome(), runtime), resolveBudgets(config))
+    ensureModeBudget(ctx, readMode(resolveHome(), runtime), resolveBudgets(config), runtime)
   } catch (error) {
     runtime.configError = error.code ?? 'tier_config_unavailable'
   }

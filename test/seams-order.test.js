@@ -300,7 +300,7 @@ test('formatStatusText 在状态里没有 injection 字段时不抛错', async (
 })
 
 
-test('真实 pre-step 管线强化指令并替换用户文本，读取故障使用缓存且冷实例拒绝', async () => {
+test('真实 pre-step 管线强化指令并替换用户文本，配置故障可见且可信内容继续工作', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bkl-seams-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -321,17 +321,39 @@ test('真实 pre-step 管线强化指令并替换用户文本，读取故障使�
     assert.match(out.messages[1].content[0].text, /active and mandatory/)
     assert.equal(out.messages[2].content[0].text, 'REAL')
     assert.equal(messages[0].content[0].text, 'REAL')
+    fs.writeFileSync(masksPath(home), JSON.stringify({ entries: [{ from: 'REAL', to: 'ALIAS' }, { from: '', to: 'INVALID' }] }))
+    assert.equal((await run()).messages[0].content[0].text, 'ALIAS')
+    assert.match(runtime.maskRead.error, /无效/u)
     fs.writeFileSync(masksPath(home), '{broken')
     assert.equal((await run()).messages[0].content[0].text, 'ALIAS')
     assert.equal(runtime.maskRead.source, 'cached')
     const cold = fakeCtx()
     registerSeams(cold.ctx, {}, fakeRuntime(), TAIL_ORDER)
-    assert.equal((await cold.handlers.get('agent/pre-step')({}, async () => ({ kind: 'enter', messages }))).kind, 'reject')
-    fs.writeFileSync(path.join(home, 'breaklimit-inject.md'), 'HEAD FOR MODE CHECK')
+    await assert.rejects(
+      () => cold.handlers.get('agent/pre-step')({}, async () => ({ kind: 'enter', messages })),
+      (error) => {
+        assert.equal(error.code, 'mask_config_unavailable')
+        assert.equal(error.message.includes(masksPath(home)), true)
+        assert.match(error.message, /修复词表/u)
+        assert.doesNotMatch(error.message, /设置页/u)
+        return true
+      },
+    )
+    const injectFile = path.join(home, 'breaklimit-inject.md')
+    fs.writeFileSync(injectFile, 'HEAD FOR MODE CHECK')
     writeTier(home, 'unrestricted')
     const assembly = { sections: [], contexts: [], tools: [], variables: {} }
     const assemble = () => handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly)
     assert.match((await assemble()).sections[0].text, /Mode: unrestricted/)
+    fs.rmSync(injectFile)
+    fs.mkdirSync(injectFile)
+    await assert.rejects(assemble, (error) => {
+      assert.equal(error.code, 'inject_not_file')
+      assert.equal(error.message.includes(injectFile), true)
+      return true
+    })
+    fs.rmSync(injectFile, { recursive: true })
+    fs.writeFileSync(injectFile, 'HEAD FOR MODE CHECK')
     fs.writeFileSync(tierConfigPath(home), '{broken')
     assert.match((await assemble()).sections[0].text, /Mode: unrestricted/)
     await assert.rejects(() => cold.handlers.get('system-prompt/assemble')(assembly, {}, async () => assembly), { code: 'tier_config_unavailable' })
