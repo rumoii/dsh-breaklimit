@@ -1796,6 +1796,7 @@ test('重塑 PatchesPage：已选数量徽章、阻断/未配目录 Notice、分
     rootMissing: false,
     broken: false,
     mode: 'recommended', // 推荐模式下 minimal.unfreeze 应置灰门禁
+    preKnown: true,
     total: 2,
     enabledCount: 1,
     pendingFiles: 1,
@@ -2604,7 +2605,10 @@ test('P2 壳层：有新版时顶栏给出可见文字，而不只是变色', ()
 })
 
 test('概览推荐主按钮从真实 Section 直接打开写入确认，不先跳转补丁页', () => {
-  const harness = loadSectionHarness(async () => {}, { status: { preflight: { pendingFiles: 2 } } })
+  const harness = loadSectionHarness(async () => {}, {
+    status: { preflight: { pendingFiles: 2 } },
+    hooks: { 3: { patches: [{ id: 'output.trim', enabled: true }] } },
+  })
   const { exported } = harness
   const page = findAll(harness.render(), n => n.type === exported.OverviewPage)[0]
   const tree = mount(page)
@@ -2618,6 +2622,141 @@ test('概览推荐主按钮从真实 Section 直接打开写入确认，不先�
   assert.equal(dialog.props.title, '确认写入 2 个宿主源码文件？')
   const overviewTab = findAll(next, n => n.props?.role === 'tab' && n.props.id === 'bkl-tab-overview')[0]
   assert.equal(overviewTab.props['aria-selected'], 'true', '确认前仍停留在概览')
+})
+
+test('概览应用失败就地显示，切页保留同一结果，重试清除错误并显示成功', async () => {
+  let applyCalls = 0
+  let replyRetry
+  const patches = { patches: [{ id: 'output.trim', enabled: true }] }
+  const status = { hostRoot: '/test-host', preflight: { code: 'ok', pendingFiles: 1, blocked: [], findings: [{ patchId: 'output.trim', path: 'source.js', state: 'pending' }] } }
+  const h = loadSectionHarness(async () => {}, {
+    status, hooks: { 3: patches },
+    fetch: async (url, init) => {
+      if (url === '/breaklimit/apply') {
+        applyCalls++
+        if (applyCalls === 1) return { ok: false, status: 500, json: async () => ({ ok: false, code: 'write_failed' }) }
+        return new Promise(resolve => { replyRetry = resolve })
+      }
+      if (init?.method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', data: {} }) }
+      const data = url === '/breaklimit/status' ? status : url === '/breaklimit/patches' ? patches : {}
+      return { ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', data }) }
+    },
+  })
+  const overview = () => findAll(h.render(), n => n.type === h.exported.OverviewPage)[0]
+  const confirm = () => findAll(h.render(), n => n.type === h.exported.Dialog && n.props.open)[0].props.onAccept()
+  overview().props.onRun('apply')
+  confirm()
+  await flushMicrotasks()
+  const failed = mount(overview())
+  assert.equal(textOf(failed).includes('write_failed'), true, '失败代码必须出现在概览实际渲染树中')
+  assert.equal(findAll(failed, n => n.type === 'button' && textOf(n).includes('重新检查')).length > 0, true)
+  const result = h.hooks[14].value.patches
+  assert.equal(result.tone, 'error')
+  assert.equal(h.timerLog.some(item => item.kind === 'set' && item.ms === 5000), false, '失败结果不能自动消失')
+
+  overview().props.onGo('patches')
+  const patchPage = findAll(h.render(), n => n.type === h.exported.PatchesPage)[0]
+  assert.equal(textOf(mount(patchPage)).includes('write_failed'), true, '切页后继续展示同一结果')
+  assert.equal(h.hooks[14].value.patches, result)
+  findAll(h.render(), n => n.props?.id === 'bkl-tab-overview')[0].props.onClick()
+  overview().props.onRun('apply')
+  confirm()
+  assert.equal(textOf(mount(overview())).includes('write_failed'), false, '重试开始即清除旧错误')
+  replyRetry({ ok: true, status: 200, json: async () => ({ ok: true, code: 'applied', data: { written: ['source.js'] } }) })
+  await flushMicrotasks()
+  assert.equal(h.hooks[14].value.patches.tone, 'ok')
+  assert.equal(textOf(mount(overview())).includes(h.hooks[14].value.patches.title), true)
+  assert.equal(h.hooks[15].value.kind, 'apply', '实际写入后保留重启流程')
+  assert.equal(applyCalls, 2)
+})
+
+test('概览应用零写入显示实际结果，不产生重启状态', async () => {
+  const patches = { patches: [{ id: 'output.trim', enabled: true }] }
+  const status = { hostRoot: '/test-host', preflight: { code: 'ok', blocked: [], pendingFiles: 1 } }
+  const h = loadSectionHarness(async () => {}, {
+    status, hooks: { 3: patches },
+    fetch: async (url) => ({ ok: true, status: 200, json: async () => ({ ok: true, code: 'ok', data:
+      url === '/breaklimit/apply' ? { written: [] } : url === '/breaklimit/status' ? status : url === '/breaklimit/patches' ? patches : {} }) }),
+  })
+  findAll(h.render(), n => n.type === h.exported.OverviewPage)[0].props.onRun('apply')
+  findAll(h.render(), n => n.type === h.exported.Dialog && n.props.open)[0].props.onAccept()
+  await flushMicrotasks()
+  const page = findAll(h.render(), n => n.type === h.exported.OverviewPage)[0]
+  assert.equal(h.hooks[14].value.patches.tone, 'info')
+  assert.equal(textOf(mount(page)).includes(h.hooks[14].value.patches.title), true)
+  assert.equal(h.hooks[15].value, null)
+})
+
+test('两页应用共用门槛，直接调用概览处理函数也不能绕过', () => {
+  const cases = [
+    { name: '操作中', hooks: { 9: true } },
+    { name: '开关保存中', hooks: { 10: { 'output.trim': false } } },
+    { name: '目录缺失', status: { hostRoot: null } },
+    { name: '状态损坏', status: { stateProblem: { code: 'bad' } } },
+    { name: '锁占用', status: { lock: { busy: true } } },
+    { name: '预检阻断', status: { preflight: { pendingFiles: 1, code: 'blocked', blocked: [{}] } } },
+    { name: '没有选中', hooks: { 3: { patches: [{ id: 'output.trim', enabled: false }] } } },
+    { name: '清单未就绪', hooks: { 3: null } },
+    { name: '清单读取失败', hooks: { 4: { title: '读取失败' } } },
+    { name: '预检未知', status: { preflight: { pendingFiles: 1, code: 'failed' } } },
+    { name: '状态读取失败', hooks: { 2: { title: '状态读取失败' } } },
+    { name: '没有待写入', status: { preflight: { pendingFiles: 0 } } },
+  ]
+  for (const item of cases) {
+    const calls = []
+    const h = loadSectionHarness(async () => {}, {
+      status: { preflight: { pendingFiles: 1 }, ...item.status },
+      hooks: { 3: { patches: [{ id: 'output.trim', enabled: true }] }, ...item.hooks },
+      fetch: (url, init) => { if (init?.method === 'POST') calls.push(url); return new Promise(() => {}) },
+    })
+    const page = findAll(h.render(), n => n.type === h.exported.OverviewPage)[0]
+    const action = h.exported.deriveActionCard(page.props.status, page.props.f).action
+    if (action === 'apply') {
+      const card = findAll(mount(page), n => n.type === 'section' && String(n.props?.className).includes('bkl-action-card'))[0]
+      assert.equal(findAll(card, n => n.type === 'button')[0].props['aria-disabled'], 'true', item.name)
+    }
+    page.props.onRun('apply')
+    assert.equal(findAll(h.render(), n => n.type === h.exported.Dialog && n.props.open).length, 0, item.name)
+    page.props.onGo('patches')
+    const patches = findAll(h.render(), n => n.type === h.exported.PatchesPage)[0]
+    const footer = findAll(mount(patches), n => n.type === 'footer')[0]
+    const button = findAll(footer, n => n.type === 'button')[0]
+    assert.equal(button.props['aria-disabled'], 'true', item.name)
+    button.props.onClick({ preventDefault() {} })
+    assert.deepEqual(calls, [], item.name)
+  }
+})
+
+test('概览应用确认取消或关闭时不发起写入', () => {
+  const calls = []
+  const h = loadSectionHarness(async () => {}, {
+    status: { preflight: { pendingFiles: 1 } }, hooks: { 3: { patches: [{ id: 'output.trim', enabled: true }] } },
+    fetch: (url, init) => { if (init?.method === 'POST') calls.push(url); return new Promise(() => {}) },
+  })
+  const page = findAll(h.render(), n => n.type === h.exported.OverviewPage)[0]
+  page.props.onRun('apply')
+  findAll(h.render(), n => n.type === h.exported.Dialog && n.props.open)[0].props.onClose()
+  assert.equal(findAll(h.render(), n => n.type === h.exported.Dialog && n.props.open).length, 0)
+  assert.deepEqual(calls, [])
+})
+
+test('推荐与自定义方案的概览页头均按磁盘事实描述，不误报推荐配置完成', () => {
+  for (const lang of ['zh-CN', 'en']) {
+    for (const custom of [false, true]) {
+      for (const pendingFiles of [0, 1]) {
+        const h = loadSectionHarness(async () => {}, { lang,
+          status: { applied: { files: 1 }, preflight: { pendingFiles } },
+          hooks: { 3: { patches: [{ id: 'output.trim', enabled: true }, { id: 'read.limits', enabled: !custom }] } },
+        })
+        const page = findAll(h.render(), n => n.type === h.exported.OverviewPage)[0]
+        const head = findAll(mount(page), n => n.props?.className === 'bkl-page-head-wrap')[0]
+        const text = textOf(head)
+        assert.equal(/推荐路径已经选好|推荐配置已就位|recommended (?:path|setup) is ready|recommended setup is in place/i.test(text), false, `${lang}/${custom}/${pendingFiles}`)
+        if (pendingFiles === 0) assert.match(text, lang === 'en' ? /disk/i : /磁盘/)
+        if (pendingFiles > 0 && custom) assert.match(textOf(mount(page)), lang === 'en' ? /custom jailbreak setup/i : /自定义破限方案/)
+      }
+    }
+  }
 })
 
 test('P2 壳层：帮助 Dialog 标题与三步骤文案来自 TEXT', () => {

@@ -754,7 +754,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       tabWords: "词库",
       // 每页顶部：标题、一句说明、生效时机。生效标签在标题旁，回答「我改完什么时候有用」。
       pageOverviewTitle: "从这里开始",
-      pageOverviewDesc: "推荐路径已经选好，你只需要确认并应用。",
+      pageOverviewDesc: "确认当前方案，检查并应用；需要时可自定义补丁。",
       pagePatchesTitle: "自定义补丁",
       pagePatchesDesc: "开关只决定下次应用包含什么；统一应用后才会修改宿主源码。",
       pagePromptTitle: "让模型按你的方式协作",
@@ -935,6 +935,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       revertHint: (n) => `回退会把上次写入的 ${String(n)} 个文件恢复成原样。`,
       whyBusy: "正在处理上一个操作，稍等。",
       whyToggling: "开关还在保存，等它完成。",
+      whyCheckFirst: "补丁清单或预检结果尚未就绪，请重新检查。",
       whyNoRoot: "插件还不知道宿主源码在哪，见概览。",
       whyBroken: "应用记录损坏，插件暂停了写入，见概览。",
       whyLock: "另一个应用或回退正在进行。",
@@ -1397,7 +1398,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       // 阶段三：概览与补丁扩展
       overviewFlowLabel: "补丁生效进度",
       overviewCurrentTitle: "当前破限配置",
-      overviewCurrentDesc: "推荐配置已就位，日常调整从这里继续。",
+      overviewCurrentDesc: "所选补丁已在磁盘上就位，日常调整从这里继续。",
       overviewConfigTitle: "核心配置与接管",
       overviewConfigDesc: "这几项互相独立，按需要调整。",
       overviewEnvTitle: "环境与权限",
@@ -1576,7 +1577,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       tabRules: "Rules",
       tabWords: "Word list",
       pageOverviewTitle: "Start here",
-      pageOverviewDesc: "The recommended setup is ready. You only need to review and apply it.",
+      pageOverviewDesc: "Review the current setup and apply it. Customize patches when needed.",
       pagePatchesTitle: "Custom patches",
       pagePatchesDesc: "Switches choose what the next apply includes. Source files change only when you apply.",
       pagePromptTitle: "Make the model work your way",
@@ -1757,6 +1758,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       revertHint: (n) => `Revert restores the ${String(n)} ${Number(n) === 1 ? "file" : "files"} written last time.`,
       whyBusy: "Still working on the previous action.",
       whyToggling: "A switch is still saving.",
+      whyCheckFirst: "The patch list or preflight result is not ready. Check again.",
       whyNoRoot: "The plugin does not know where the host source is yet; see Overview.",
       whyBroken: "The apply record is damaged and writing is paused; see Overview.",
       whyLock: "Another apply or revert is running.",
@@ -2220,7 +2222,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       // Phase 3: Overview and patches extension
       overviewFlowLabel: "Patch application progress",
       overviewCurrentTitle: "Current jailbreak setup",
-      overviewCurrentDesc: "Your recommended setup is in place. Continue with everyday adjustments here.",
+      overviewCurrentDesc: "The selected patches are in place on disk. Continue with everyday adjustments here.",
       overviewConfigTitle: "Core configuration and takeover",
       overviewConfigDesc: "These settings are independent; adjust as needed.",
       overviewEnvTitle: "Environment and permissions",
@@ -3091,14 +3093,15 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     return "ready"
   }
 
-  function applyReason(f, busy, toggles) {
+  function applyReason(f, busy, toggles, readError = null) {
     if (busy) return T.whyBusy
     if (Object.keys(toggles).length > 0) return T.whyToggling
     if (f.rootMissing) return T.whyNoRoot
     if (f.broken) return T.whyBroken
+    if (readError !== null || !f.preKnown) return T.whyCheckFirst
     if (f.lockBusy) return T.whyLock
     if (f.blocked.length > 0) return T.whyBlocked(f.blocked.length)
-    if (f.total > 0 && f.enabledCount === 0) return T.whyNoneSelected
+    if (f.enabledCount === 0) return T.whyNoneSelected
     if (f.pendingFiles === 0) return T.whyNothing
     return null
   }
@@ -4061,7 +4064,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       }))
   }
 
-  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, restartView, words, onCopy, loadedAt, onOpenHelp }) {
+  function OverviewPage({ f, status, override, step, busy, enabledPending, restart, onRun, onGo, onToggleEnabled, nextNotice, overviewNotice, patchNotice, applyWhy = null, restartView, words, onCopy, loadedAt, onOpenHelp }) {
     // 技术诊断默认收起；open 仍受控，重渲染不会覆盖用户的展开选择。
     const [diagOpen, setDiagOpen] = useState(false)
     const target = status?.target ?? {}
@@ -4124,12 +4127,13 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
             h("div", { className: "bkl-action-actions" },
               h(Button, {
                 kind: "primary",
-                off: busy,
-                reason: T.whyBusy,
+                off: actionCard.action === "apply" ? applyWhy !== null : busy,
+                reason: actionCard.action === "apply" ? applyWhy : T.whyBusy,
                 onClick: () => { onRun(actionCard.action) },
               }, actionCard.button),
               restart !== null ? restartView : null,
-              nextNotice ?? null)),
+              nextNotice ?? null),
+            patchNotice ?? null),
           h(Card, {
             title: T.overviewConfigTitle,
             titleId: "bkl-config-title",
@@ -4380,8 +4384,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
   const PatchCard = PatchRowItem
 
-  function PatchesPage({ f, patchInfo, patchError, busy, toggles, onToggle, onApply, onRevert, onRun, onCopy, onGo, noticeView, restartView }) {
-    const applyWhy = applyReason(f, busy, toggles)
+  function PatchesPage({ f, patchInfo, patchError, loadError = null, busy, toggles, onToggle, onApply, onRevert, onRun, onCopy, onGo, noticeView, restartView }) {
+    const applyWhy = applyReason(f, busy, toggles, patchError || loadError)
     const revertWhy = revertReason(f, busy)
     const blockedText = f.blocked.map(item => `${String(item?.patchId ?? "")} · ${String(item?.path ?? "")} · ${String(item?.reason ?? "")}`).join("\n")
     const isBlocked = f.blocked.length > 0
@@ -5695,6 +5699,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     }, [clearNotice, notify, load])
 
     const askApply = () => {
+      if (applyReason(f, busy, toggles, patchError || loadError) !== null) return
       openDialog({
         title: T.confirmApplyTitle(f.pendingFiles),
         body: h("div", { style: S.wordEditorFields },
@@ -6144,7 +6149,9 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
 
     const noticeFor = (scope) => (notices[scope]
       ? h(Notice, {
-        notice: notices[scope],
+        notice: scope === "patches" && notices[scope].tone === "error"
+          ? { ...notices[scope], action: notices[scope].action ?? "refresh" }
+          : notices[scope],
         onAction: (action) => {
           // 「现在激活」直接把刚保存的那条规则的激活确认弹出来：保存与激活是两步。
           if (action === "activateNow") {
@@ -6197,6 +6204,8 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         words: aliasStore.state,
         nextNotice: noticeFor("next"),
         overviewNotice: noticeFor("overview"),
+        patchNotice: noticeFor("patches"),
+        applyWhy: applyReason(f, busy, toggles, patchError || loadError),
         onRun: runAction,
         onGo: goTab,
         onToggleEnabled: (next) => { void toggleEnabled(next) },
@@ -6205,7 +6214,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       })
     } else if (tab === "patches") {
       body = h(PatchesPage, {
-        f, patchInfo, patchError, busy, toggles, restartView,
+        f, patchInfo, patchError, loadError, busy, toggles, restartView,
         noticeView: noticeFor("patches"),
         onToggle: (id, next) => { void togglePatch(id, next) },
         onApply: askApply,
