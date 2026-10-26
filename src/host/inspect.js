@@ -144,3 +144,231 @@ export function fileExists(target) {
     return false
   }
 }
+
+const CURRENT = 'current_value'
+const CUMULATIVE = 'process_cumulative'
+const LAST_OBSERVATION = 'last_observation'
+
+function diagnosticLayer(id, state, scope, action = null, detail = null, evidence = {}, warnings = []) {
+  return { id, state, scope, action, detail, evidence, warnings }
+}
+
+function seamCount(status, name) {
+  const value = status.seams?.[name]
+  return Number.isFinite(value) && value >= 0 ? value : 0
+}
+
+function diskDiagnosis(status) {
+  const pre = status.preflight
+  if (status.stateProblem || pre?.code === 'state_corrupt' || pre?.code === 'state_version_mismatch') {
+    return diagnosticLayer('disk', 'fail', CURRENT, 'check-state', pre?.message ?? status.stateProblem?.reason ?? null)
+  }
+  if (pre?.code === 'recovery_required') {
+    if (status.lock?.busy === true) return diagnosticLayer('disk', 'unknown', CURRENT, 'refresh', '另一项应用或回退正在当前进程中进行。')
+    return diagnosticLayer('disk', 'fail', CURRENT, 'check-recovery', pre.message ?? null)
+  }
+  if (pre?.code === 'host_root_unconfigured' || pre?.code === 'tier_config_unavailable' || !pre) {
+    return diagnosticLayer('disk', 'unknown', CURRENT, 'check-host-root', pre?.message ?? null)
+  }
+  if (!Number.isFinite(pre.selectedPatches)) return diagnosticLayer('disk', 'unknown', CURRENT, 'refresh')
+  if (pre.selectedPatches === 0) return diagnosticLayer('disk', 'not_applicable', CURRENT, null, null, { selectedPatches: 0 })
+  const evidence = {
+    selectedPatches: pre.selectedPatches,
+    pendingFiles: pre.pendingFiles,
+    blockedFiles: Array.isArray(pre.blocked) ? pre.blocked.length : null,
+  }
+  if (pre.code === 'blocked' || (Array.isArray(pre.blocked) && pre.blocked.length > 0)) {
+    return diagnosticLayer('disk', 'fail', CURRENT, 'patches', pre.message ?? null, evidence)
+  }
+  if (pre.code === 'ok' && pre.pendingFiles > 0) {
+    return diagnosticLayer('disk', 'fail', CURRENT, 'apply', '补丁尚未写入磁盘；预检通过只表示允许应用。', evidence)
+  }
+  const findings = pre.findings
+  if (pre.code !== 'ok' || pre.pendingFiles !== 0 || !Array.isArray(findings) || findings.length === 0) {
+    return diagnosticLayer('disk', 'unknown', CURRENT, 'refresh', null, evidence)
+  }
+  if (findings.some(item => !['applied', 'satisfied'].includes(item?.state))) {
+    return diagnosticLayer('disk', 'unknown', CURRENT, 'refresh', null, evidence)
+  }
+  return diagnosticLayer('disk', 'pass', CURRENT, null, null, evidence)
+}
+
+const BUDGET_KEYS = [
+  ['shell', 'timeoutMs'],
+  ['shell', 'maxTimeoutMs'],
+  ['shell', 'maxOutputBytes'],
+  ['subagents', 'maxDepth'],
+]
+
+function processDiagnosis(status) {
+  const loader = status.loader
+  const budgetApply = status.budgetApply
+  const mismatched = Array.isArray(budgetApply?.mismatched) ? budgetApply.mismatched : []
+  const skipped = Array.isArray(budgetApply?.skipped)
+    ? budgetApply.skipped.filter(reason => typeof reason === 'string' && !reason.endsWith('条目已禁用'))
+    : []
+  const unverified = Array.isArray(budgetApply?.unverified) ? budgetApply.unverified : []
+  const evidence = {
+    loaderEntries: Array.isArray(loader?.entries) ? loader.entries.length : null,
+    mismatched: mismatched.length,
+    skipped: skipped.length,
+    unverified: unverified.length,
+  }
+  const failure = [...mismatched, ...skipped]
+  if (failure.length > 0) {
+    return diagnosticLayer('process', 'fail', CURRENT, 'retry-tier', '预算提交或读回与当前模式不一致。', evidence)
+  }
+  for (const [service, key] of BUDGET_KEYS) {
+    const expected = status.budgetExpected?.[service]?.[key]
+    const actual = status.budget?.[service]?.[key]
+    if (!Number.isFinite(expected)) return diagnosticLayer('process', 'unknown', CURRENT, 'refresh', null, evidence)
+    if (actual === null || actual === undefined) return diagnosticLayer('process', 'unknown', CURRENT, 'refresh', null, evidence)
+    if (actual !== expected) {
+      return diagnosticLayer('process', 'fail', CURRENT, 'retry-tier', `${service}.${key} 预期 ${String(expected)}，实际 ${String(actual)}`, evidence)
+    }
+  }
+  if (status.preflight?.code !== 'ok'
+    || !Number.isFinite(status.preflight.pendingFiles)
+    || !Number.isFinite(status.preflight.selectedPatches)) {
+    return diagnosticLayer('process', 'unknown', CURRENT, 'refresh', '补丁预检不完整，无法判断当前进程的装载基础。', evidence)
+  }
+  if (status.preflight.pendingFiles > 0) {
+    return diagnosticLayer('process', 'unknown', CURRENT, 'restart', '磁盘存在待写入变化；当前进程是否装载新补丁无法判定。', evidence)
+  }
+  const appliedAt = Date.parse(status.applied?.updatedAt)
+  const processStartedAt = status.processStartedAt
+  evidence.appliedAt = Number.isFinite(appliedAt) ? appliedAt : null
+  evidence.processStartedAt = Number.isFinite(processStartedAt) ? processStartedAt : null
+  if (status.preflight.selectedPatches > 0
+    && (!Number.isFinite(appliedAt) || !Number.isFinite(processStartedAt) || appliedAt > processStartedAt)) {
+    return diagnosticLayer('process', 'unknown', CURRENT, 'restart', '应用记录不早于当前进程启动，重启后的补丁装载无法判定。', evidence)
+  }
+  if (unverified.length > 0) {
+    return diagnosticLayer('process', 'unknown', CURRENT, 'refresh', '预算提交尚有未核实项。', evidence)
+  }
+  const loaderReadable = loader?.error === null && Array.isArray(loader.entries)
+    && (loader.hasCtxLoader === true || loader.hasRootLoader === true)
+  if (!loaderReadable || !['recommended', 'unrestricted'].includes(status.promptMode)) {
+    return diagnosticLayer('process', 'unknown', CURRENT, 'refresh', 'Loader 或当前提示词模式不可读。', evidence)
+  }
+  return diagnosticLayer('process', 'pass', CURRENT, null, null, evidence)
+}
+
+function assemblyDiagnosis(status) {
+  if (status.enabled === false) return diagnosticLayer('assembly', 'not_applicable', LAST_OBSERVATION)
+  if (status.inject?.ok === false) {
+    return diagnosticLayer('assembly', 'fail', LAST_OBSERVATION, 'edit-prompt', status.inject.message ?? status.inject.code ?? null)
+  }
+  if (status.tier?.source === 'unavailable') {
+    return diagnosticLayer('assembly', 'fail', LAST_OBSERVATION, 'check-tier', status.tier.error ?? null)
+  }
+  if (status.injection?.inert === true) {
+    return diagnosticLayer('assembly', 'fail', LAST_OBSERVATION, 'check-host-preset', status.injection.reason ?? null)
+  }
+  if (status.inject?.ok !== true || typeof status.tier?.source !== 'string'
+    || seamCount(status, 'assemble') === 0 || status.injection?.inert !== false) {
+    return diagnosticLayer('assembly', 'unknown', LAST_OBSERVATION, 'run-session', status.injection?.reason ?? null)
+  }
+  return diagnosticLayer('assembly', 'pass', LAST_OBSERVATION, null, null, {
+    assemblies: seamCount(status, 'assemble'),
+  }, status.tier.source === 'cached' ? ['tier_cached'] : [])
+}
+
+function requestDiagnosis(status) {
+  if (status.enabled === false) return diagnosticLayer('request', 'not_applicable', CUMULATIVE)
+  const evidence = {
+    preStep: seamCount(status, 'preStep'),
+    hardenHits: seamCount(status, 'hardenHits'),
+    hardenMisses: seamCount(status, 'hardenMisses'),
+    maskHits: Number.isFinite(status.masks?.hits) ? status.masks.hits : 0,
+    lastMaskHits: Number.isFinite(status.masks?.lastHits) ? status.masks.lastHits : 0,
+    lastMaskAt: Number.isFinite(status.masks?.lastAt) ? status.masks.lastAt : 0,
+    configuredMasks: Number.isFinite(status.masks?.configured) ? status.masks.configured : null,
+  }
+  if (status.maskRead?.source === 'unavailable') {
+    return diagnosticLayer('request', 'fail', CUMULATIVE, 'check-masks', status.maskRead.error ?? null, evidence)
+  }
+  if (evidence.preStep === 0 || !status.maskRead || evidence.configuredMasks === null) {
+    return diagnosticLayer('request', 'unknown', CUMULATIVE, 'run-session', null, evidence)
+  }
+  const warnings = []
+  if (evidence.hardenMisses > 0) warnings.push('harden_misses_cumulative')
+  if (status.maskRead.error) warnings.push('mask_read_warning')
+  return diagnosticLayer('request', 'pass', CUMULATIVE, null, null, evidence, warnings)
+}
+
+function executionDiagnosis(status) {
+  if (status.enabled === false) return diagnosticLayer('execution', 'not_applicable', CUMULATIVE)
+  const evidence = {
+    approval: seamCount(status, 'approval'),
+    toolGate: seamCount(status, 'toolGate'),
+    editIntent: seamCount(status, 'editIntent'),
+    currentPreset: typeof status.permission?.current === 'string' ? status.permission.current : null,
+  }
+  if (status.modeSource !== 'session' || status.sandbox?.available !== true || status.permission?.available !== true) {
+    return diagnosticLayer('execution', 'unknown', CUMULATIVE, 'run-session', '当前会话档位或权限预设不可判定。', evidence)
+  }
+  const current = status.permission.layers?.find(layer => layer?.name === status.permission.current)
+  if (!current || typeof current.approval !== 'string') {
+    return diagnosticLayer('execution', 'unknown', CUMULATIVE, 'check-permissions', null, evidence)
+  }
+  if (current.approval === 'never') {
+    return diagnosticLayer('execution', 'fail', CUMULATIVE, 'check-permissions', '当前会话预设会在审批接缝之前拒绝请求。', evidence)
+  }
+  if (evidence.approval + evidence.toolGate + evidence.editIntent === 0) {
+    return diagnosticLayer('execution', 'unknown', CUMULATIVE, 'run-session', null, evidence)
+  }
+  return diagnosticLayer('execution', 'pass', CUMULATIVE, null, null, evidence)
+}
+
+/** 只归纳现有状态，不补探针，也不把进程累计观测归因到单次请求。 */
+export function diagnoseStatus(status) {
+  return {
+    layers: [
+      diskDiagnosis(status),
+      processDiagnosis(status),
+      assemblyDiagnosis(status),
+      requestDiagnosis(status),
+      executionDiagnosis(status),
+    ],
+  }
+}
+
+const DIAGNOSTIC_NAMES = {
+  disk: '磁盘补丁',
+  process: '进程装载与运行时预算',
+  assembly: '系统提示装配',
+  request: '请求前处理观测',
+  execution: '执行权限与接缝观测',
+}
+const DIAGNOSTIC_STATES = { pass: '通过', fail: '未生效', unknown: '不可判定', not_applicable: '不适用' }
+const DIAGNOSTIC_ACTIONS = {
+  apply: '检查并应用所选补丁，随后重启宿主。',
+  'check-state': '先检查 state.json 与恢复记录；记录不可信时不要尝试回退。',
+  'check-recovery': '先确认没有其他应用或回退正在运行，再按可信事务记录恢复。',
+  patches: '查看补丁预检与漂移明细，不要绕过守卫强写。',
+  'check-host-root': '检查宿主根与当前提示词档位配置。',
+  restart: '完成磁盘写入后重启宿主，再重新检查。',
+  'retry-tier': '用 /breaklimit tier <模式> 重新提交预算并读回核对。',
+  refresh: '重新读取状态；保持未知时不要当成已生效。',
+  'edit-prompt': '修复注入文件后重新检查。',
+  'check-tier': '修复提示词档位配置后重新检查。',
+  'check-host-preset': '检查宿主 preset 是否丢弃了注入段。',
+  'check-masks': '修复词表配置后重试；不要按空词表继续。',
+  'run-session': '在目标会话执行一次实际任务后重新读取观测。',
+  'check-permissions': '检查当前会话预设与 approval 策略。',
+}
+
+export function formatDiagnosticText(report) {
+  const lines = ['五层运行时诊断（只读观测）']
+  for (const layer of report?.layers ?? []) {
+    const scope = layer.scope === CUMULATIVE ? '；进程累计' : layer.scope === LAST_OBSERVATION ? '；最近观测' : ''
+    lines.push(`  ${DIAGNOSTIC_NAMES[layer.id] ?? layer.id}  ${DIAGNOSTIC_STATES[layer.state] ?? '不可判定'}${scope}`)
+    if (layer.detail) lines.push(`    ${layer.detail}`)
+    const entries = Object.entries(layer.evidence ?? {})
+    if (entries.length > 0) lines.push(`    证据  ${entries.map(([key, value]) => `${key}=${String(value)}`).join('，')}`)
+    if (layer.action) lines.push(`    下一步  ${DIAGNOSTIC_ACTIONS[layer.action] ?? '重新检查状态。'}`)
+    if (layer.warnings?.length > 0) lines.push(`    告警  ${layer.warnings.join('、')}`)
+  }
+  return lines.join('\n')
+}

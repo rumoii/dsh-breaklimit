@@ -1680,6 +1680,32 @@ test('OverviewPage：三阶段流程、主行动卡、双栏配置与默认收�
   assert.equal(textOf(loadingConfig).includes('读取失败'), false, 'loading 期配置卡不得误报「读取失败」')
 })
 
+test('技术诊断文本追加五层状态、证据与累计范围，并保留双语', () => {
+  const status = {
+    diagnostics: {
+      layers: [
+        { id: 'disk', state: 'pass', scope: 'current_value', action: null, detail: null, evidence: { pendingFiles: 0 } },
+        { id: 'request', state: 'unknown', scope: 'process_cumulative', action: 'run-session', detail: null, evidence: { preStep: 0 }, warnings: ['harden_misses_cumulative', 'mask_read_warning'] },
+      ],
+    },
+  }
+  const zh = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
+  const zhText = zh.exported.formatDiagnostics(status, { rulesIndex: 'ok', applied: null })
+  assert.match(zhText, /磁盘补丁: 通过/u)
+  assert.match(zhText, /请求前处理观测: 不可判定/u)
+  assert.match(zhText, /自插件本次装载以来累计/u)
+  assert.match(zhText, /preStep=0/u)
+  assert.match(zhText, /告警: 进程内曾有工作区声明措辞未识别；词表读取有降级告警/u)
+
+  const en = loadClient()
+  const enText = en.exported.formatDiagnostics(status, { rulesIndex: 'ok', applied: null })
+  assert.match(enText, /Disk patches: Pass/u)
+  assert.match(enText, /Pre-request processing: Unknown/u)
+  assert.match(enText, /since this plugin loaded/u)
+  assert.match(enText, /Open a session/u)
+  assert.match(enText, /Warnings: Unrecognized workspace instruction wording was observed; Word list reading has a warning/u)
+})
+
 test('沙箱档位徽章随 modeSource 诚实化：default 显示未探测，session 与缺席按档位显示', () => {
   const renderPage = (lang) => {
     const { exported } = loadClient(lang === undefined ? {} : { document: { documentElement: { lang } } })

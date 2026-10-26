@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { EventEmitter } from 'node:events'
-import { createHandler, redactPathsInText } from '../src/serve/http.js'
+import { createHandler, redactPathsInText, redactStatusDiagnostics } from '../src/serve/http.js'
 import { knownPatchIds } from '../src/patch/patch-selection.js'
 
 const HOME_SEGMENT = 'John Doe'
@@ -261,4 +261,41 @@ test('POST /rules/delete 写失败：正文删除失败的 errno 原文脱敏', 
   assert.match(response.payload.message, /正文删除失败/u, response.payload.message)
   assert.match(response.payload.message, /…\//u, response.payload.message)
   assertSanitized(response.payload, home, dir)
+})
+
+test('GET /status：诊断整体脱敏且不包含词表正文', async (t) => {
+  const { home, dir } = fixture(t)
+  const injectFile = path.join(home, 'inject-dir')
+  fs.mkdirSync(injectFile, { recursive: true })
+  const handler = createHandler({ get() { return undefined } }, { injectFile }, {
+    enabled: true,
+    counters: {},
+    maskSnapshot: { file: path.join(home, 'masks.json'), entries: [{ from: '秘密原词', to: '秘密替换词' }] },
+  })
+
+  const response = await request(handler, 'GET', '/status')
+  const serialized = JSON.stringify(response.payload)
+
+  assert.equal(response.status, 200)
+  assert.match(response.payload.data.inject.message, /…\/inject-dir/u)
+  assert.match(JSON.stringify(response.payload.data.diagnostics), /…\/inject-dir/u)
+  assert.doesNotMatch(serialized, /秘密原词|秘密替换词/u)
+  assertSanitized(response.payload, home, dir)
+})
+
+test('诊断脱敏精确覆盖通用正则不识别的 POSIX 与 UNC 已知路径', () => {
+  for (const file of ['/workspace/alice/inject.md', String.raw`\\server\share\alice\inject.md`]) {
+    const message = `注入文件不可读：${file}`
+    const view = redactStatusDiagnostics({
+      hostRoot: null,
+      inject: { file },
+      lock: { file: null },
+      rulesIndexPath: null,
+      diagnostics: { layers: [{ detail: message, evidence: { nested: [message] } }] },
+    }, 'C:\\Users\\alice\\.dsh')
+    const serialized = JSON.stringify(view)
+
+    assert.equal(serialized.includes(file), false, serialized)
+    assert.match(serialized, /…\/inject\.md/u)
+  }
 })

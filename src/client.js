@@ -1394,6 +1394,44 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       diagPreflight: "补丁预检",
       diagRuntime: "运行行为",
       diagRuntimeNotVerified: "未由此页面验证",
+      diagLayer: (id) => ({
+        disk: "磁盘补丁",
+        process: "进程装载与运行时预算",
+        assembly: "系统提示装配",
+        request: "请求前处理观测",
+        execution: "执行权限与接缝观测",
+      }[id] ?? id),
+      diagLayerState: (state) => ({ pass: "通过", fail: "未生效", unknown: "不可判定", not_applicable: "不适用" }[state] ?? "不可判定"),
+      diagScope: (scope) => ({
+        process_cumulative: "自插件本次装载以来累计",
+        last_observation: "最近一次观测",
+        current_value: "当前值",
+      }[scope] ?? ""),
+      diagEvidence: "证据",
+      diagNext: "下一步",
+      diagWarnings: "告警",
+      diagWarningSeparator: "；",
+      diagWarning: (code) => ({
+        harden_misses_cumulative: "进程内曾有工作区声明措辞未识别",
+        mask_read_warning: "词表读取有降级告警",
+        tier_cached: "档位配置读取失败，当前沿用可信缓存",
+      }[code] ?? code),
+      diagAction: (action) => ({
+        apply: "检查并应用所选补丁，随后重启宿主",
+        "check-state": "先检查 state.json 与恢复记录，不要尝试回退",
+        "check-recovery": "先确认没有其他应用或回退，再按可信事务记录恢复",
+        patches: "查看补丁预检与漂移明细",
+        "check-host-root": "检查宿主根与提示词档位配置",
+        restart: "完成磁盘写入后重启宿主",
+        "retry-tier": "重新切换当前档位以提交预算并读回核对",
+        refresh: "重新读取状态；未知不等于已生效",
+        "edit-prompt": "修复注入文件后重新检查",
+        "check-tier": "修复提示词档位配置",
+        "check-host-preset": "检查宿主 preset 是否丢弃注入段",
+        "check-masks": "修复词表配置后重试",
+        "run-session": "在目标会话执行任务后重新读取观测",
+        "check-permissions": "检查当前会话预设与 approval 策略",
+      }[action] ?? action),
 
       // 阶段三：概览与补丁扩展
       overviewFlowLabel: "补丁生效进度",
@@ -2218,6 +2256,44 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       diagPreflight: "Patch preflight",
       diagRuntime: "Runtime behavior",
       diagRuntimeNotVerified: "Not verified by this page",
+      diagLayer: (id) => ({
+        disk: "Disk patches",
+        process: "Process loading and runtime budget",
+        assembly: "System prompt assembly",
+        request: "Pre-request processing",
+        execution: "Execution permission and seam observations",
+      }[id] ?? id),
+      diagLayerState: (state) => ({ pass: "Pass", fail: "Not effective", unknown: "Unknown", not_applicable: "Not applicable" }[state] ?? "Unknown"),
+      diagScope: (scope) => ({
+        process_cumulative: "Cumulative since this plugin loaded",
+        last_observation: "Last observation",
+        current_value: "Current value",
+      }[scope] ?? ""),
+      diagEvidence: "Evidence",
+      diagNext: "Next step",
+      diagWarnings: "Warnings",
+      diagWarningSeparator: "; ",
+      diagWarning: (code) => ({
+        harden_misses_cumulative: "Unrecognized workspace instruction wording was observed",
+        mask_read_warning: "Word list reading has a warning",
+        tier_cached: "Tier configuration could not be read; using a trusted cached value",
+      }[code] ?? code),
+      diagAction: (action) => ({
+        apply: "Check and apply selected patches, then restart the host",
+        "check-state": "Inspect state.json and recovery records first; do not attempt a revert",
+        "check-recovery": "Confirm no apply or revert is running, then recover from a trusted transaction",
+        patches: "Review patch preflight and drift details",
+        "check-host-root": "Check the host root and prompt tier configuration",
+        restart: "Restart the host after disk writes complete",
+        "retry-tier": "Reselect the current tier to submit and verify the budget",
+        refresh: "Read status again; unknown does not mean effective",
+        "edit-prompt": "Fix the injection file and check again",
+        "check-tier": "Fix the prompt tier configuration",
+        "check-host-preset": "Check whether the host preset drops injected sections",
+        "check-masks": "Fix the word list configuration and retry",
+        "run-session": "Open a session, run a task, and read observations again",
+        "check-permissions": "Check the current session preset and approval policy",
+      }[action] ?? action),
 
       // Phase 3: Overview and patches extension
       overviewFlowLabel: "Patch application progress",
@@ -3294,6 +3370,24 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       ? T.diagAppliedCount(appliedFilesCount)
       : T.diagAppliedNone
     const preCode = status?.preflight?.code ? String(status.preflight.code) : T.unknown
+    const layers = Array.isArray(status?.diagnostics?.layers) ? status.diagnostics.layers : []
+    const layerLines = layers.flatMap((layer) => {
+      if (!layer || typeof layer.id !== "string" || typeof layer.state !== "string") return []
+      const scope = T.diagScope(layer.scope)
+      const detail = typeof layer.detail === "string" && layer.detail !== "" ? [`  ${layer.detail}`] : []
+      const evidence = layer.evidence !== null && typeof layer.evidence === "object"
+        ? Object.entries(layer.evidence).map(([key, value]) => `${key}=${String(value)}`).join(", ")
+        : ""
+      const action = typeof layer.action === "string" ? T.diagAction(layer.action) : null
+      const warnings = Array.isArray(layer.warnings) ? layer.warnings.map(code => T.diagWarning(code)).join(T.diagWarningSeparator) : ""
+      return [
+        `${T.diagLayer(layer.id)}: ${T.diagLayerState(layer.state)}${scope ? ` (${scope})` : ""}`,
+        ...detail,
+        evidence ? `  ${T.diagEvidence}: ${evidence}` : null,
+        warnings ? `  ${T.diagWarnings}: ${warnings}` : null,
+        action ? `  ${T.diagNext}: ${action}` : null,
+      ].filter(Boolean)
+    })
 
     return [
       `${T.diagCommit}: ${targetCommit}`,
@@ -3304,6 +3398,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       `${T.diagApplied}: ${appliedText}`,
       `${T.diagPreflight}: ${preCode}`,
       `${T.diagRuntime}: ${T.diagRuntimeNotVerified}`,
+      ...layerLines,
     ].join("\n")
   }
 

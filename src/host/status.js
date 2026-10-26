@@ -10,7 +10,8 @@ import { currentMode, describeSandboxPolicy, sessionOf } from './seams.js'
 import * as rules from '../context/rules.js'
 import * as tiers from '../context/tiers.js'
 import { readModeExtension, readTail } from '../context/prompt.js'
-import { describeLoader, readRuntimeLimits, recheckBudget } from './capabilities.js'
+import { describeLoader, readRuntimeLimits, recheckBudget, resolveBudgets } from './capabilities.js'
+import { diagnoseStatus } from './inspect.js'
 
 const name = 'rumo-dsh-breaklimit'
 
@@ -153,12 +154,28 @@ export function buildStatus(ctx, config, runtime) {
   const { state: loaded, preflight: preflightSummary } = inspectPatches({ root: hostRoot, home, mode })
   const session = sessionOf(runtime.holder)
   const sandbox = describeSandboxPolicy(ctx, session)
+  const expectedBudget = mode === null ? null : resolveBudgets(config)[mode]
 
-  return {
+  const status = {
     plugin: name,
     promptMode: mode,
+    processStartedAt: Date.now() - (process.uptime() * 1000),
     configError: runtime.configError ?? null,
     maskRead: runtime.maskRead ?? null,
+    budgetExpected: expectedBudget === null ? null : {
+      shell: {
+        timeoutMs: expectedBudget.timeoutMs,
+        maxTimeoutMs: expectedBudget.maxTimeoutMs,
+        maxOutputBytes: expectedBudget.maxOutputBytes,
+      },
+      subagents: { maxDepth: expectedBudget.maxDepth },
+    },
+    masks: {
+      configured: runtime.maskSnapshot?.entries?.length ?? null,
+      hits: runtime.counters.maskHits ?? 0,
+      lastHits: runtime.maskLast?.hits ?? 0,
+      lastAt: runtime.maskLast?.at ?? 0,
+    },
     budget: readRuntimeLimits(ctx),
     budgetApply: recheckBudget(ctx),
     loader: describeLoader(ctx),
@@ -272,6 +289,7 @@ export function buildStatus(ctx, config, runtime) {
       })
     })(),
   }
+  return { ...status, diagnostics: diagnoseStatus(status) }
 }
 
 /**

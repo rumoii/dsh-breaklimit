@@ -103,6 +103,30 @@ test('doctor 用配置里的预算判定，不拿内置值误报', async (t) => 
   assert.match(report.text, /bash 超时\s+7/u)
 })
 
+test('doctor 追加同源五层诊断并标明进程累计范围', async () => {
+  const { doctorReport } = await import('../src/host/commands.js')
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = tempHome()
+  try {
+    const runtime = {
+      enabled: true,
+      counters: {
+        approval: 0, escalation: 0, escalationRejected: 0, toolGate: 0, editIntent: 0,
+        assemble: 0, preStep: 0, hardenHits: 0, hardenMisses: 0, maskHits: 0,
+      },
+      maskLast: { hits: 0, at: 0 },
+    }
+    const report = doctorReport({ get: () => undefined }, { hostRoot: '' }, runtime)
+    for (const label of ['磁盘补丁', '进程装载与运行时预算', '系统提示装配', '请求前处理观测', '执行权限与接缝观测']) {
+      assert.match(report.text, new RegExp(label, 'u'))
+    }
+    assert.match(report.text, /进程累计/u)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
+})
+
 test('档位读不到与真的只读分开报告', () => {
   const absent = describeSandboxPolicy({ get: () => undefined })
   assert.equal(absent.available, false)

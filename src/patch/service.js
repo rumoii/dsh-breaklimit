@@ -74,6 +74,7 @@ export function inspectPatches({ root, home, mode = 'recommended', hashes = PATC
     code: result.ok ? 'ok' : 'blocked',
     findings: result.findings,
     blocked: result.blocked,
+    selectedPatches: patches.length,
     pendingFiles: result.changes.size,
     blockedFiles,
     conflictFiles: blockedFiles - modeMismatchFiles,

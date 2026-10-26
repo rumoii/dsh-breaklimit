@@ -195,11 +195,26 @@ function parseJsonBody(raw) {
 const CONFLICT_CODES = new Set(['operation_in_progress', 'drift_detected', 'recovery_required'])
 const INTERNAL_CODES = new Set(['apply_failed', 'revert_failed', 'state_corrupt', 'state_version_mismatch', 'io_failed'])
 
-function redactDetails(value) {
-  if (typeof value === 'string') return redactPathsInText(value)
-  if (Array.isArray(value)) return value.map(redactDetails)
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDetails(item)]))
+function redactDetails(value, knownPaths = []) {
+  if (typeof value === 'string') {
+    const exact = knownPaths.reduce((text, file) => redactPathInText(text, file), value)
+    return redactPathsInText(exact)
+  }
+  if (Array.isArray(value)) return value.map(item => redactDetails(item, knownPaths))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDetails(item, knownPaths)]))
+  }
   return value
+}
+
+export function redactStatusDiagnostics(status, home) {
+  return redactDetails(status.diagnostics, [
+    status.hostRoot,
+    status.inject?.file,
+    status.lock?.file,
+    status.rulesIndexPath,
+    masksPath(home),
+  ])
 }
 
 function fromOperation(result) {
@@ -387,6 +402,7 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
       const status = buildStatus(ctx, config, runtime)
       return envelope(200, 'ok', '', {
         ...status,
+        diagnostics: redactStatusDiagnostics(status, home()),
         hostRoot: redactPath(status.hostRoot),
         stateProblem: redactDetails(status.stateProblem),
         budgetApply: redactDetails(status.budgetApply),

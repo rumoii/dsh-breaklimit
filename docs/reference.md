@@ -9,7 +9,7 @@
 | `/breaklimit revert` | 回退已记录的宿主文件改动 |
 | `/breaklimit tier [recommended\|unrestricted]` | 查看或切换提示词模式；缺省为 `recommended` |
 | `/breaklimit on`、`/breaklimit off` | 开启或关闭本次插件实例的运行时接管；不撤销已应用补丁 |
-| `/breaklimit doctor` | 一条命令报告模式、执行层预算与补丁状态是否一致 |
+| `/breaklimit doctor` | 报告模式、预算与补丁明细，并给出同源五层运行时诊断 |
 | `/breaklimit upgrade` | 逐条核对补丁声明里的原文是否还在宿主里，失配时给出定位 |
 | `/breaklimit diff` | 当前提示词正文与内置正文的差异 |
 | `/breaklimit import <路径>` | 把一份 AGENTS.md 导入成规则（不自动激活） |
@@ -39,6 +39,7 @@
 breaklimit --status
 breaklimit --apply
 breaklimit --revert
+breaklimit --doctor
 breaklimit --tier [recommended|unrestricted]
 breaklimit --edit
 breaklimit --rules
@@ -46,7 +47,7 @@ breaklimit --host-root <路径> --status
 breaklimit --help
 ```
 
-`--edit` 打开自定义提示词文件，`--rules` 列出规则。`--host-root` 可与需要宿主根的动作组合使用；无动作参数时显示帮助。CLI 与宿主接口共用补丁引擎，但各进程的宿主根和 `DSH_HOME` 配置须保持一致。诊断用宿主内的 `/breaklimit doctor`；独立 CLI 没有对应开关。
+`--edit` 打开自定义提示词文件，`--rules` 列出规则。`--host-root` 可与需要宿主根的动作组合使用；无动作参数时显示帮助。CLI 与宿主接口共用补丁引擎，但各进程的宿主根和 `DSH_HOME` 配置须保持一致。独立 CLI `--doctor` 只检查 Node、pnpm、git、宿主根、依赖、数据目录、Web 组合与插件注册；五层运行时诊断使用宿主内的 `/breaklimit doctor`。
 
 CLI 的动作参数一次只接受一个：`--status --apply` 这类多动作组合被拒绝，报错并以退出码 2 结束，不按书写顺序取最后一个执行。未知参数（含拼错的开关与多余参数）同样报错退出，错误信息指出参数本身；`--host-root`、`--tier` 后面的取值不按未知参数处理。`--help`（或 `-h`）不受影响，正常显示帮助并退出 0。
 
@@ -92,9 +93,23 @@ CLI 退出码：`0` 动作成功，或 `--status` 预检通过；`1` 预检阻�
 
 `GET /breaklimit/status` 的 `data` 里，`mode` 是审批与工具门实际使用的档位（`sandboxPolicy` 的解析结果，读不到时按 `read-only` 处理）；`sandbox` 说明这个档位是不是真的读到了，字段为 `{ available, mode, error }`。`available` 为 false 表示服务缺失或解析抛错，`error` 给出原因；此时状态文本多一行「档位来源 不可判定」，避免把「真的只读」和「读不到档位」显示成同一个值。`modeSource` 说明档位归因：`'session'` 表示会话档位真的解析了出来，`'default'` 表示没探测到会话、落到部署默认档或档位根本没解析出来——为 `'default'` 时界面徽章显示「档位未探测」，不把部署默认档当会话档展示。`ensure` 是装载时规则首轮收拢的结果（导入了哪条/为何跳过/失败原因），没有收拢动作时为 `null`；它只做可见性，失败不影响插件装载。
 
+`data.diagnostics.layers` 是五层只读诊断，每项包含 `id`、`state`、`scope`、`action`、`detail`、`evidence` 和 `warnings`。`state` 为 `pass`（通过）、`fail`（未生效）、`unknown`（不可判定）或 `not_applicable`（不适用）；`scope` 区分 `current_value`、`last_observation` 和 `process_cumulative`。整层适用时，当前失效优先于未知，未知优先于通过；历史累计告警不归因成当前会话失败，其他权限档的警告也不直接判当前档失败。
+
+| `id` | 层 | `pass` 的必要条件 | 关键边界 |
+| --- | --- | --- | --- |
+| `disk` | 磁盘补丁 | 选择数大于 0，预检无阻断，`pendingFiles === 0`，findings 全为 `applied` / `satisfied` | `preflight.ok` 同时有待写入文件时为 `fail`；未选择补丁为 `not_applicable` |
+| `process` | 进程装载与运行时预算 | `preflight.code === "ok"` 且选择数/待写入数完整，无待写入，应用记录不晚于当前进程启动，Loader 可读，当前模式的适用预算全部匹配，提交无失效或未核实项 | 预检早退或关键字段缺失为 `unknown`；应用时间晚于进程启动、预算缺数或提交 `unverified` 同样不得通过 |
+| `assembly` | 系统提示装配 | 注入与档位可读，有装配观测，最终 system/message 未丢弃注入 | 接管关闭为 `not_applicable`；尚无最终消息观测为 `unknown`，不证明模型效果 |
+| `request` | 请求前处理观测 | `preStep > 0`，词表配置数量已观测，当前无请求阻断错误 | 声明改写与词表计数是进程累计值；累计 `hardenMisses` 只告警，不单独判当前失败 |
+| `execution` | 执行权限与接缝观测 | 当前会话档位与预设可解析、当前预设无前置拒绝，至少一个相关接缝有进程内观测 | 计数为 0 是 `unknown`；只证明接缝观测，不证明工具最终执行成功 |
+
+`preflight.selectedPatches` 提供当前选择数，`budgetExpected` 提供当前模式的预期预算，`processStartedAt` 是与 `applied.updatedAt` 比较装载先后的进程启动时间（毫秒时间戳）。`masks` 只含 `{ configured, hits, lastHits, lastAt }` 统计；`hits` 是进程累计值，`lastHits` / `lastAt` 是本次装载以来最近一次命中，不是当前请求命中。词表词条、替换结果、消息和请求正文不进入状态。
+
+恢复动作按证据分流：`state_corrupt` / `state_version_mismatch` 使用 `check-state`，先检查恢复记录，不引导回退；`recovery_required` 且本进程锁占用时为 `unknown + refresh`，非占用时为 `fail + check-recovery`，先确认没有其他应用或回退，再按可信事务恢复。`warnings` 同时显示在宿主命令和 Web 技术诊断中。
+
 写请求须带 `Origin`，其 URL 的 host（含端口）须与请求头 `Host` 一致；读请求可省略 `Origin`，携带时也执行此校验。不满足校验的请求返回 403。写接口使用 JSON 请求体；响应字段为 `ok`、`code`、`message` 和可选的 `data`。并发冲突与清单损坏返回 409，失败 `code` 为：规则锁被占用 `locked`、清单 revision 冲突 `conflict`、规则清单损坏 `index_corrupt`，以及补丁侧的并发与漂移冲突 `operation_in_progress`、`drift_detected`——这类失败是「有人在并发操作、重试即可」或「文件漂移、核对后再来」，不是调用方的输入错误。预检阻断（`preflight_blocked`）与输入非法（`invalid_json`、`invalid_target`、`rule_invalid` 等）返回 400；规则路由的其余失败（`body_write_failed`、`landing_write_failed`、`index_write_failed`、`index_unreadable` 等）也按实现返回 400，原因在 `message` 里。本方内部故障返回 500：`PUT /alias`、`POST /patches/enabled`、`POST /override`、`POST /tier` 的写盘故障 `write_failed`，补丁引擎的 `apply_failed`、`revert_failed`、`state_corrupt`、`state_version_mismatch`，以及未捕获异常 `internal_error`。`snapshot_corrupt`（回退对账发现快照缺失、不可读或与记录不符，属备份证据损坏、非输入错误）按实现返回 400，调用方以 `code` 分辨。`drifted` 明细用 `kind: 'snapshot' | 'target'` 区分快照故障与目标漂移；混合故障的汇总分别计数，前端展示每项分类、路径与原因。失败 `code` 是否透传随路由而异：`POST /rules/save` 与 `POST /rules/recover-corrupt` 把失败 `code` 原样放进信封；`POST /rules/activate`（含取消激活）、`POST /rules/delete`、`POST /rules/reset` 的失败 `code` 统一为 `rule_invalid`（`index_corrupt` 保留原 `code`），这三条路由上的并发冲突同样返回 409，分流以状态码为准。词库、更新与补丁开关的写入锁冲突沿各域既有失败形状报出（`POST /patches/enabled` 落 500 `write_failed`、更新接口落 500/502，每日自动检查把 `locked` 收进 `lastError`），不带 409；这几个域没有并发写契约，分辨靠 `code` 与 `message`。请求体超过上限返回 413 `too_large`：上限按所承载载荷（规则正文与注入正文）的 6 倍 JSON 转义余量推导，不设固定封顶，所以正文上限调大后请求体上限跟着涨；正文本身超限不走 413：`POST /breaklimit/rules/save` 回 400 `rule_invalid`、`POST /breaklimit/override` 回 400 `too_large`，与请求体超限不是同一件事。检查更新失败返回 502：`code` 为 `update_unreachable`（连不上、超时、非 2xx、限流或代理失败）或 `update_invalid`（响应不是 JSON 或没有合法版本标签）。
 
-HTTP 响应里的绝对路径一律脱敏：盘符、用户目录与中间层级不出现，路径只折成 `…/<最后一段>`。唯一例外是 `POST /breaklimit/restart` 回传的 `data.command`：它必须是可直接粘贴执行的重启命令，真实绝对路径才有意义；该接口同样在 Host 栅栏与同源校验之内，只有本机放行的来源读得到它。
+HTTP 响应里的绝对路径一律脱敏：盘符、用户目录与中间层级不出现，路径只折成 `…/<最后一段>`；`diagnostics` 内嵌套对象和数组先精确替换本次状态已知的宿主根、注入文件、操作锁、规则索引和词表路径，再按通用路径规则脱敏，覆盖通用正则未包含的 POSIX 根和 UNC 形状。唯一例外是 `POST /breaklimit/restart` 回传的 `data.command`：它必须是可直接粘贴执行的重启命令，真实绝对路径才有意义；该接口同样在 Host 栅栏与同源校验之内，只有本机放行的来源读得到它。
 
 未提供 `webServer` 服务的宿主组合不会挂载这些路由，状态中显示 `http.mounted: false`。Web 设置页的可用性取决于宿主加载的客户端与服务组合。
 

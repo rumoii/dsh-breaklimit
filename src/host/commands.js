@@ -10,7 +10,7 @@ import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
 import { switchTier, readRuntimeLimits, resolveBudgets } from './capabilities.js'
 import { inspectPatches } from '../patch/service.js'
 import { resolvePatches } from '../patch/patch-selection.js'
-import { diffPrompt, formatDiff, formatUpgrade, importRule, upgradeReport } from './inspect.js'
+import { diffPrompt, formatDiagnosticText, formatDiff, formatUpgrade, importRule, upgradeReport } from './inspect.js'
 import { readInject } from '../context/inject-file.js'
 
 export function registerCommands(ctx, config, runtime) {
@@ -175,11 +175,23 @@ export function registerCommands(ctx, config, runtime) {
 export function doctorReport(ctx, config, runtime) {
   const home = resolveHome()
   const mode = readMode(home, runtime)
-  // 诊断与实际提交读同一份预算；否则覆盖配置后 doctor 会拿内置值误报不一致。
-  const expected = resolveBudgets(config)[mode]
-  const now = readRuntimeLimits(ctx)
+  const status = runtime ? buildStatus(ctx, config, runtime) : null
+  const configuredExpected = status?.budgetExpected ?? resolveBudgets(config)[mode]
+  const expected = 'shell' in configuredExpected
+    ? { ...configuredExpected.shell, maxDepth: configuredExpected.subagents.maxDepth }
+    : configuredExpected
+  const now = status?.budget ?? readRuntimeLimits(ctx)
   const lines = [`提示词模式  ${mode}`]
   const problems = []
+  const finish = () => {
+    if (status) {
+      lines.push('', formatDiagnosticText(status.diagnostics))
+      for (const layer of status.diagnostics.layers) {
+        if (layer.state === 'fail') problems.push(`diagnosis:${layer.id}`)
+      }
+    }
+    return { kind: problems.length > 0 ? 'error' : 'success', text: lines.join('\n') }
+  }
 
   const pairs = [
     ['bash 超时', now.shell.timeoutMs, expected.timeoutMs],
@@ -194,12 +206,12 @@ export function doctorReport(ctx, config, runtime) {
     problems.push('runtime')
   }
 
-  const root = resolveHostRoot(config)
+  const root = status?.hostRoot ?? resolveHostRoot(config)
   if (root === null) {
     lines.push('宿主根    未配置，无法判定源码补丁状态')
-    return { kind: problems.length > 0 ? 'error' : 'success', text: lines.join('\n') }
+    return finish()
   }
-  const { preflight } = inspectPatches({ root, home, mode })
+  const preflight = status?.preflight ?? inspectPatches({ root, home, mode }).preflight
   if (preflight.ok) {
     lines.push(`源码补丁  与 ${mode} 一致（待写入 ${String(preflight.pendingFiles)} 个文件）`)
   } else {
@@ -214,5 +226,5 @@ export function doctorReport(ctx, config, runtime) {
   if (problems.includes('patches')) {
     lines.push('修复：源码补丁需回退后按当前模式重新应用，并重启宿主。')
   }
-  return { kind: problems.length === 0 ? 'success' : 'error', text: lines.join('\n') }
+  return finish()
 }
