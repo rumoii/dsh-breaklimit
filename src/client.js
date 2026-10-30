@@ -1002,6 +1002,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptDesc: "两档模式共用的这段正文放在模型指令的最前面。保存后用你的版本替换内置正文；模式的附加段不受影响。",
       promptUsingMine: (s) => `正在用你的版本 · ${String(s)}`,
       promptUsingBuiltin: "正在用内置正文",
+      promptStaleTitle: "你保存的正文基于旧版内置正文",
+      promptStaleNext: (saved, builtin) => `内置正文已更新到 ${String(builtin)}，你保存的这份基于 ${String(saved)}。插件后来对正文的改进不会自动合并进来；要跟进请对照最新内置正文改写，或先「恢复内置」再改。`,
+      promptStaleUnknownVersion: "未知版本",
+      promptBaselineUnknownTitle: "无法判断你保存的正文是否落后于内置正文",
+      promptBaselineUnknownNext: "这份正文没有基线记录，或记录已不可用。保存一次会把当前内置正文记为基线，之后就能判断；要直接用最新正文请点「恢复内置」。",
       promptPlaceholder: "在这里写给模型的长期指令…",
       promptCount: (chars, size) => `${String(chars)} 字 · ${String(size)}`,
       promptDirty: "有未保存的改动",
@@ -1863,6 +1868,11 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       promptDesc: "Both modes share this body, placed at the very start of the model instructions. Saving replaces the built-in body with your version; the mode-specific part is not affected.",
       promptUsingMine: (s) => `Using your version · ${String(s)}`,
       promptUsingBuiltin: "Using the built-in body",
+      promptStaleTitle: "Your saved body is based on an older built-in body",
+      promptStaleNext: (saved, builtin) => `The built-in body is now ${String(builtin)}; your copy is based on ${String(saved)}. Later improvements to the built-in body are not merged in. To pick them up, rewrite against the current built-in body, or restore it first and edit from there.`,
+      promptStaleUnknownVersion: "unknown version",
+      promptBaselineUnknownTitle: "Cannot tell whether your saved body is behind the built-in body",
+      promptBaselineUnknownNext: "This body has no baseline record, or the record is unusable. Saving once records the current built-in body as the baseline, after which the comparison works; to use the latest body directly, choose Restore built-in.",
       promptPlaceholder: "Write standing instructions for the model here…",
       promptCount: (chars, size) => `${String(chars)} characters · ${String(size)}`,
       promptDirty: "Unsaved changes",
@@ -3096,7 +3106,14 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
       rulesIndexPath: typeof status?.rulesIndexPath === "string" && status.rulesIndexPath !== ""
         ? status.rulesIndexPath
         : "breaklimit/rules.json",
-      customPrompt: override?.userFileExists === true,
+      // 是否在用用户正文：文件存在且非空。用 userFileActive 而不是 userFileExists，
+      // 后者在「恢复内置」之后仍为真，会把内置正文说成用户的版本。
+      customPrompt: override?.userFileActive === true,
+      // 用户正文基于旧版内置正文：照旧生效，但要说出这件事。
+      promptBaselineStale: override?.baseline?.state === "stale",
+      // 判不出新旧（老版本保存的正文没有基线，或记录损坏）：也要说出来，
+      // 否则这批用户永远不知道自己可能停在旧正文上。
+      promptBaselineUnknown: override?.baseline?.state === "unknown",
       restartPending: restart !== null,
     }
   }
@@ -4692,7 +4709,7 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
     const saved = typeof override?.text === "string" ? override.text : ""
     const value = draft ?? saved
     const dirty = draft !== null && draft !== saved
-    const mine = override?.userFileExists === true
+    const mine = override?.userFileActive === true
     const saveWhy = !loaded ? T.whyPromptUnread : busy ? T.whyBusy : !dirty ? T.whyNoChange : value.trim() === "" ? T.whyEmptyPrompt : null
     const resetWhy = !loaded ? T.whyPromptUnread : busy ? T.whyBusy : !mine ? T.whyAlreadyBuiltin : null
 
@@ -4726,6 +4743,24 @@ window.__ModuleLoader__.load({ id: "rumo-dsh-breaklimit", factory: (require) => 
         }),
       effectiveBad
         ? h(Notice, { notice: { tone: "warn", title: T.injectBad(override.effective.code), next: T.injectBadNext } })
+        : null,
+      // 用户正文基于旧版内置：装配照旧用它，但插件后来对正文的改进进不来。
+      // 只提示，不自动合并——合并等于替用户改写他写下的字。
+      override?.baseline?.state === "stale"
+        ? h(Notice, {
+          notice: {
+            tone: "warn",
+            title: T.promptStaleTitle,
+            next: T.promptStaleNext(
+              override.baseline.saved?.plugin ?? T.promptStaleUnknownVersion,
+              override.baseline.builtin?.plugin ?? T.promptStaleUnknownVersion),
+          },
+        })
+        : null,
+      // 判不出新旧时同样要说：这批正文多半是旧版本保存的，没有基线可比。
+      // 保存一次就会把当前内置正文记为基线，之后就能判定。
+      override?.baseline?.state === "unknown"
+        ? h(Notice, { notice: { tone: "info", title: T.promptBaselineUnknownTitle, next: T.promptBaselineUnknownNext } })
         : null,
       h("textarea", {
         className: "bkl-input",

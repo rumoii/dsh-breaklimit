@@ -4,7 +4,9 @@ import { resolveHome } from '../patch/state.js'
 import { sharedOperationLock } from '../patch/transaction.js'
 import { lockFilePath } from '../patch/lock.js'
 import { inspectPatches } from '../patch/service.js'
-import { readInject } from '../context/inject-file.js'
+import { readInject, userInjectPath } from '../context/inject-file.js'
+import { baselineState } from '../context/inject-baseline.js'
+import { sizeOf } from '../patch/fsx.js'
 import { resolveHostRootInfo } from './host-root.js'
 import { currentMode, describeSandboxPolicy, sessionOf } from './seams.js'
 import * as rules from '../context/rules.js'
@@ -205,7 +207,18 @@ export function buildStatus(ctx, config, runtime) {
       hardenMisses: runtime.counters.hardenMisses,
     },
     inject: (() => {
-      return { ok: injected.ok, code: injected.code, message: injected.message, file: injected.file, bytes: injected.bytes }
+      // 用户正文是否真的在替换内置正文：存在且非空。空文件在 readInject 里回落
+      // 内置，光看「文件存在」会把内置正文报成用户的版本。
+      const userFile = userInjectPath(config)
+      const overrideActive = sizeOf(userFile) > 0
+      return {
+        ok: injected.ok,
+        code: injected.code,
+        message: injected.message,
+        file: injected.file,
+        bytes: injected.bytes,
+        override: { active: overrideActive, ...baselineState(home, { active: overrideActive }) },
+      }
     })(),
     tier: (() => {
       const base = injected.ok ? injected.text : ''
@@ -398,6 +411,17 @@ export function formatStatusText(status) {
   }
   if (status.injection?.inert === true) {
     lines.push(`  注入告警      ${status.injection.reason}`)
+  }
+  const override = status.inject?.override
+  if (override?.state === 'stale') {
+    const saved = override.saved?.plugin ?? '未知版本'
+    const builtin = override.builtin?.plugin ?? '当前版本'
+    lines.push(`  正文基线      用户正文基于 ${saved} 的内置正文，${builtin} 已更新；当前仍用用户的版本`)
+  } else if (override?.state === 'unknown') {
+    const reason = override.reason === 'no_baseline'
+      ? '保存时还没有基线记录'
+      : override.reason === 'builtin_unreadable' ? '内置正文读不到' : String(override.reason ?? '无记录')
+    lines.push(`  正文基线      判不出用户正文是否落后于内置正文（${reason}）`)
   }
   if (status.tier?.kind === 'corrupt' || status.tier?.kind === 'unreadable') {
     lines.push(`  档位问题      tier_config_corrupt：$DSH_HOME/breaklimit/tier.json 读不出或内容非法，${status.tier.source === 'cached' ? `沿用已确认档位 ${String(status.tier.active)}` : '无可信档位，相关操作已暂停'}`)

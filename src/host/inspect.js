@@ -269,9 +269,14 @@ function assemblyDiagnosis(status) {
     || seamCount(status, 'assemble') === 0 || status.injection?.inert !== false) {
     return diagnosticLayer('assembly', 'unknown', LAST_OBSERVATION, 'run-session', status.injection?.reason ?? null)
   }
+  // 装配成功但用户正文基于旧内置：注入确实进去了，效果可能落后于当前正文。
+  // 这是一条告警而不是 fail——用户的正文是他的选择，不是故障。
+  const warnings = []
+  if (status.tier.source === 'cached') warnings.push('tier_cached')
+  if (status.inject?.override?.state === 'stale') warnings.push('inject_baseline_stale')
   return diagnosticLayer('assembly', 'pass', LAST_OBSERVATION, null, null, {
     assemblies: seamCount(status, 'assemble'),
-  }, status.tier.source === 'cached' ? ['tier_cached'] : [])
+  }, warnings)
 }
 
 function requestDiagnosis(status) {

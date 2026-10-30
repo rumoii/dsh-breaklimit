@@ -9,6 +9,7 @@ import { atomicWrite, sizeOf } from '../patch/fsx.js'
 import { revertPatches } from '../patch/transaction.js'
 import { applySelectedPatches } from '../patch/service.js'
 import { userInjectPath, maxInjectBytes, readInject } from '../context/inject-file.js'
+import { baselineState, builtinFingerprint, removeBaseline, writeBaseline } from '../context/inject-baseline.js'
 import { resolveHostRoot } from '../host/host-root.js'
 import { buildStatus, savedMessage } from '../host/status.js'
 import { promptMode, readMode, readModeExtension } from '../context/prompt.js'
@@ -476,10 +477,18 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
     'GET /override': () => {
       const file = userInjectPath(config)
       const loaded = readInject(config)
+      const bytes = sizeOf(file)
+      const exists = fs.existsSync(file)
+      // 生效的是「存在且非空」的用户文件；空文件在 readInject 里回落内置正文。
+      // 界面据 userFileActive 判断「正在用你的版本」，不能用 userFileExists——
+      // 恢复内置之后那种判据会让页面显示「正在用你的版本 · 0 B」。
+      const active = exists && bytes > 0
       return envelope(200, 'ok', '', {
         file: redactPath(file),
-        bytes: sizeOf(file),
-        userFileExists: fs.existsSync(file),
+        bytes,
+        userFileExists: exists,
+        userFileActive: active,
+        baseline: baselineState(home(), { active }),
         effective: {
           ok: loaded.ok,
           code: loaded.code,
@@ -501,13 +510,42 @@ function buildRoutes(ctx, config, runtime, bodyLimit) {
         return envelope(400, 'too_large', `内容超过上限 ${String(limit)} 字节。`)
       }
       const file = userInjectPath(config)
+      if (parsed.text === '') {
+        // 恢复内置：删文件而不是留一个 0 字节文件。两者在装配上等价，但空文件让
+        // 「文件存在」与「正文生效」分叉，界面就会把内置正文说成用户的版本。
+        try {
+          fs.rmSync(file, { force: true })
+        } catch (error) {
+          logInternal('write_failed', error)
+          return envelope(500, 'write_failed', WRITE_FAILED_MESSAGE)
+        }
+        removeBaseline(home())
+        return envelope(200, 'saved', '已恢复内置正文。', { file: redactPath(file), bytes: 0 })
+      }
       try {
         atomicWrite(file, parsed.text)
       } catch (error) {
         logInternal('write_failed', error)
         return envelope(500, 'write_failed', WRITE_FAILED_MESSAGE)
       }
-      return envelope(200, 'saved', '注入文本已保存。', { file: redactPath(file), bytes: sizeOf(file) })
+      // 基线跟随正文一起写。写不进去时正文已经落盘，不能报失败，但必须说出来：
+      // 否则下次内置正文更新时不会有任何提醒。
+      let baselineWrite = { ok: true, error: null }
+      try {
+        const builtin = builtinFingerprint()
+        if (builtin === null) baselineWrite = { ok: false, error: 'builtin_unreadable' }
+        else writeBaseline(home(), builtin)
+      } catch (error) {
+        logInternal('baseline_write_failed', error)
+        baselineWrite = { ok: false, error: 'write_failed' }
+      }
+      return envelope(200, 'saved', baselineWrite.ok
+        ? '注入文本已保存。'
+        : '注入文本已保存；基线记录写入失败，内置正文更新后不会有提醒。', {
+        file: redactPath(file),
+        bytes: sizeOf(file),
+        baselineWrite,
+      })
     },
 
     'GET /tier': () => {

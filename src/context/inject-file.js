@@ -7,7 +7,8 @@ import { readTextOrNull } from '../patch/fsx.js'
 
 const DEFAULT_MAX_INJECT_BYTES = 512 * 1024
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const PACKAGE_INJECT = path.join(HERE, 'inject.md')
+/** 内置正文路径。基线记录按同一份文件取指纹，两处不能各拼一遍路径。 */
+export const PACKAGE_INJECT_PATH = path.join(HERE, 'inject.md')
 
 export function userInjectPath(config) {
   const configured = typeof config?.injectFile === 'string' ? config.injectFile.trim() : ''
@@ -38,7 +39,7 @@ export function readInject(config) {
     }
   }
   if (stat === undefined || (stat.isFile() && stat.size === 0)) {
-    file = PACKAGE_INJECT
+    file = PACKAGE_INJECT_PATH
     try {
       stat = fs.statSync(file)
     } catch {

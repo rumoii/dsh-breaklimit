@@ -57,6 +57,18 @@ function diagnosticLayer(status, id) {
   return diagnoseStatus(status).layers.find(layer => layer.id === id)
 }
 
+test('五层诊断：用户正文基于旧内置时装配仍通过，但带基线告警', () => {
+  const stale = passingStatus()
+  stale.inject = { ok: true, code: 'ok', message: '', override: { active: true, state: 'stale' } }
+  const layer = diagnosticLayer(stale, 'assembly')
+  assert.equal(layer.state, 'pass')
+  assert.equal(layer.warnings.includes('inject_baseline_stale'), true)
+
+  const current = passingStatus()
+  current.inject = { ok: true, code: 'ok', message: '', override: { active: true, state: 'current' } }
+  assert.equal(diagnosticLayer(current, 'assembly').warnings.includes('inject_baseline_stale'), false)
+})
+
 test('五层诊断：正面证据完整时全部通过，累计观测标明范围', () => {
   const report = diagnoseStatus(passingStatus())
   assert.deepEqual(report.layers.map(layer => [layer.id, layer.state]), [

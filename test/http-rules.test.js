@@ -121,6 +121,42 @@ test('小正文保存成功：响应带名字与写入文件，正文落盘', as
   assert.equal(fs.readFileSync(bodyPath(home, 'demo'), 'utf8'), text)
 })
 
+test('保存自定义正文：基线随正文写入，GET 报告在用用户的版本', async (t) => {
+  const { home, handler } = fixture(t)
+  const saved = await request(handler, 'POST', '/override', { text: 'custom body\n' })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.payload.data.baselineWrite.ok, true)
+  assert.equal(fs.readFileSync(path.join(home, 'breaklimit-inject.md'), 'utf8'), 'custom body\n')
+  assert.equal(fs.existsSync(path.join(home, 'breaklimit', 'inject-baseline.json')), true)
+
+  const read = await request(handler, 'GET', '/override')
+  assert.equal(read.payload.data.userFileActive, true)
+  assert.equal(read.payload.data.baseline.state, 'current')
+  // readInject 保存时 trim，读回的是去掉尾部换行的正文。
+  assert.equal(read.payload.data.text, 'custom body')
+})
+
+test('恢复内置：删掉用户文件与基线，0 字节文件不再被说成用户的版本', async (t) => {
+  const { home, handler } = fixture(t)
+  await request(handler, 'POST', '/override', { text: 'custom body\n' })
+
+  const reset = await request(handler, 'POST', '/override', { text: '' })
+  assert.equal(reset.status, 200)
+  assert.match(reset.payload.message, /恢复内置/u)
+  assert.equal(fs.existsSync(path.join(home, 'breaklimit-inject.md')), false)
+  assert.equal(fs.existsSync(path.join(home, 'breaklimit', 'inject-baseline.json')), false)
+
+  const read = await request(handler, 'GET', '/override')
+  assert.equal(read.payload.data.userFileExists, false)
+  assert.equal(read.payload.data.userFileActive, false)
+  assert.equal(read.payload.data.baseline.state, 'absent')
+  assert.equal(read.payload.data.text.startsWith('[MODE: UNRESTRICTED SANDBOX'), true)
+
+  // 再恢复一次是幂等的：没有文件也算成功，不产生 500。
+  const again = await request(handler, 'POST', '/override', { text: '' })
+  assert.equal(again.status, 200)
+})
+
 test('300 KiB 正文保存成功：旧的 256 KiB 请求体上限不再把它拦成内部错误', async (t) => {
   const { home, handler } = fixture(t)
   const text = `${'a'.repeat(300 * 1024)}\n`

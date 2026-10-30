@@ -242,7 +242,7 @@ test('正文读取失败时不显示空正文或内置正文，也不许覆盖',
 test('HTTP 成功但 effective 读取失败时，正文仍未知且所有覆盖操作暂停', () => {
   const { exported } = loadClient()
   const tree = mount(exported.PromptBlock({
-    override: { text: '', userFileExists: true, bytes: 900000, effective: { ok: false, code: 'inject_too_large' } },
+    override: { text: '', userFileExists: true, userFileActive: true, bytes: 900000, effective: { ok: false, code: 'inject_too_large' } },
     promptError: null, draft: 'new text', setDraft() {}, busy: false,
     onSave() { assert.fail('must not save') }, onReset() { assert.fail('must not reset') },
     onDiscard() {}, onCopy() { assert.fail('must not copy') }, onRetry() {}, noticeView: null,
@@ -264,7 +264,7 @@ test('正文读取成功后才允许编辑与保存，草稿优先于已保存�
   let received = null
   let saved = 0
   const tree = mount(exported.PromptBlock({
-    override: { text: 'builtin text', userFileExists: true, bytes: 12, effective: { ok: true } },
+    override: { text: 'builtin text', userFileExists: true, userFileActive: true, bytes: 12, effective: { ok: true } },
     promptError: null,
     draft: 'my draft',
     setDraft(value) { received = value },
@@ -1975,13 +1975,54 @@ test('阶段四：两档模式权衡卡片（mode-grid）要点与预算渲染�
   assert.equal(compareText.includes('保留') && compareText.includes('解除'), true, '对比表应对比保留与解除')
 })
 
+test('提示词页：正文基于旧内置时告警，判不出新旧时也说出来', () => {
+  const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
+  const props = {
+    promptError: null,
+    draft: null,
+    setDraft() {},
+    busy: false,
+    onSave() {},
+    onReset() {},
+    onDiscard() {},
+    onCopy() {},
+    onRetry() {},
+    noticeView: null,
+  }
+  const body = { text: 'hello', userFileExists: true, userFileActive: true, bytes: 5, effective: { ok: true } }
+
+  const stale = mount(exported.PromptBlock({
+    ...props,
+    override: {
+      ...body,
+      baseline: { state: 'stale', saved: { plugin: '0.9.4' }, builtin: { plugin: '0.9.5' } },
+    },
+  }))
+  const staleText = textOf(stale)
+  assert.equal(staleText.includes('0.9.4') && staleText.includes('0.9.5'), true,
+    'stale 告警应同时给出用户正文与当前内置的版本')
+  assert.equal(staleText.includes('不会自动合并'), true, 'stale 告警要说明内置改进不会合并')
+
+  const unknown = mount(exported.PromptBlock({
+    ...props,
+    override: { ...body, baseline: { state: 'unknown', reason: 'no_baseline' } },
+  }))
+  assert.equal(textOf(unknown).includes('没有基线记录'), true, '判不出新旧时必须说出来，不能沉默')
+
+  const current = mount(exported.PromptBlock({
+    ...props,
+    override: { ...body, baseline: { state: 'current' } },
+  }))
+  assert.equal(textOf(current).includes('基于旧版'), false, '基线一致时不应出现落后告警')
+})
+
 test('阶段四：Prompt 编辑器脏状态（dirty）高亮、字数/字节数精确计算与动态原因反馈', () => {
   const { exported } = loadClient({ document: { documentElement: { lang: 'zh-CN' } } })
   assert.equal(typeof exported.PromptBlock, 'function', 'PromptBlock 必须被导出')
 
   // 1. 未修改态（clean）
   const cleanTree = mount(exported.PromptBlock({
-    override: { text: 'hello', userFileExists: true, bytes: 5, effective: { ok: true } },
+    override: { text: 'hello', userFileExists: true, userFileActive: true, bytes: 5, effective: { ok: true } },
     promptError: null,
     draft: null,
     setDraft() {},
@@ -2003,7 +2044,7 @@ test('阶段四：Prompt 编辑器脏状态（dirty）高亮、字数/字节数�
   // 2. 脏状态（dirty）：卡片高亮、字数与 UTF-8 字节数精确计算、未保存徽章与动态原因反馈
   let discarded = false
   const dirtyTree = mount(exported.PromptBlock({
-    override: { text: 'hello', userFileExists: true, bytes: 5, effective: { ok: true } },
+    override: { text: 'hello', userFileExists: true, userFileActive: true, bytes: 5, effective: { ok: true } },
     promptError: null,
     draft: '你好世界', // 4 字符，UTF-8 编码下每个汉字 3 字节，共 12 字节
     setDraft() {},
