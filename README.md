@@ -25,6 +25,10 @@
 
 </div>
 
+> **开发状态：暂停开发**
+>
+> 因特殊情况，项目已经暂停开发。
+
 当前版本 **0.9.5，内测版**。发布产物和验证边界见 [Releases](https://github.com/rumoii/dsh-breaklimit/releases)；正式版计划为 1.0.0。
 
 ## 亮点
